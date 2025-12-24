@@ -29,6 +29,7 @@ class KillSwitchError(Exception):
 DISABLE_TRUE_REUSE = False
 DISABLE_EVIDENCE_REUSE = False
 DISABLE_GROUNDING = False
+DISABLE_LEARNING = False  # Strategic Autonomy learning
 
 # ============================================================================
 # Switch Metadata
@@ -38,12 +39,14 @@ _SWITCH_MESSAGES = {
     "TRUE_REUSE": "True Reuse is currently disabled by operator.",
     "EVIDENCE_REUSE": "Evidence Reuse is currently disabled by operator.",
     "GROUNDING": "Grounding validation is currently disabled by operator.",
+    "LEARNING": "Strategic Autonomy learning is currently disabled by operator.",
 }
 
 _SWITCH_REGISTRY = {
     "TRUE_REUSE": lambda: DISABLE_TRUE_REUSE,
     "EVIDENCE_REUSE": lambda: DISABLE_EVIDENCE_REUSE,
     "GROUNDING": lambda: DISABLE_GROUNDING,
+    "LEARNING": lambda: DISABLE_LEARNING,
 }
 
 

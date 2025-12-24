@@ -1,0 +1,63 @@
+{
+    "spec_version": "1.0.0",
+    "frozen_at": "2024-12-23T18:40:00Z",
+    "immutable_parameters": {
+        "learning_rate": {
+            "value": 0.2,
+            "type": "float",
+            "description": "EMA learning rate (α)",
+            "mutation_violation": "DTL-REDLINE-005"
+        },
+        "weight_bounds": {
+            "min": 0.1,
+            "max": 2.0,
+            "type": "range",
+            "description": "Routing weight bounds",
+            "mutation_violation": "DTL-REDLINE-006"
+        },
+        "decay_rate": {
+            "value": 0.95,
+            "type": "float",
+            "description": "Time-based decay factor",
+            "mutation_violation": "DTL-REDLINE-007"
+        },
+        "decay_function": {
+            "formula": "w_new = w_old * decay_rate^days_elapsed",
+            "type": "formula",
+            "description": "Exponential decay function",
+            "mutation_violation": "DTL-REDLINE-008"
+        }
+    },
+    "abort_taxonomy": {
+        "codes": [
+            "DTL-STRAT-001",
+            "DTL-STRAT-002",
+            "DTL-STRAT-003",
+            "DTL-STRAT-004",
+            "DTL-STRAT-005",
+            "DTL-STRAT-006",
+            "DTL-STRAT-007",
+            "DTL-STRAT-008",
+            "DTL-STRAT-009",
+            "DTL-STRAT-010",
+            "DTL-STRAT-011",
+            "DTL-STRAT-012",
+            "DTL-STRAT-013",
+            "DTL-STRAT-014"
+        ],
+        "mutation_violation": "DTL-REDLINE-009"
+    },
+    "red_line_violations": {
+        "DTL-REDLINE-005": "Learning rate mutation attempted",
+        "DTL-REDLINE-006": "Weight bounds mutation attempted",
+        "DTL-REDLINE-007": "Decay rate mutation attempted",
+        "DTL-REDLINE-008": "Decay function mutation attempted",
+        "DTL-REDLINE-009": "Abort taxonomy mutation attempted"
+    },
+    "ci_guard": {
+        "required_env": "STRAT_VERSION_BUMP",
+        "description": "Any change to immutable parameters requires explicit version bump",
+        "enforcement": "pre-commit hook + CI check"
+    },
+    "spec_hash": "sha256:a7f3e9c2b1d4f6e8a0c3b5d7e9f1a2c4d6e8f0a2c4d6e8f0a2c4d6e8f0a2c4d6"
+}

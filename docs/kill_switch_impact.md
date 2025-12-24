@@ -17,6 +17,7 @@ This analysis examines how Strategic Autonomy interacts with existing kill switc
 | `DISABLE_TRUE_REUSE` | Stop evidence reuse across queries | Blocks True Reuse path |
 | `DISABLE_EVIDENCE_REUSE` | Stop evidence reuse within runs | Forces fresh fetch |
 | `DISABLE_GROUNDING` | Bypass grounding validation | Allows ungrounded output |
+| `DISABLE_LEARNING` | **NEW** Stop all Strategic Autonomy learning | Blocks Policy Memory writes, weight updates, counterfactual, decay |
 
 ---
 

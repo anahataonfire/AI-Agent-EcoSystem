@@ -14,7 +14,7 @@
     ],
     "justification": "System upgraded from Bounded to Strategic Autonomy through: (1) cross-run Policy Memory for routing adaptation, (2) skill routing learning loop with bounded updates, (3) counterfactual evaluation for learning from paths not taken, (4) controlled goal reformulation with strict guardrails. System is NOT General Autonomy because: (a) cannot create new goals, (b) cannot modify skills or beliefs, (c) cannot bypass abort conditions, (d) learning is scoped to strategy only. System is NOT Unbounded because: (a) all learning has caps and decay, (b) determinism is preserved via snapshot isolation, (c) operators retain kill-switch authority.",
     "metadata": {
-        "assessment_date": "2024-12-23",
+        "assessment_date": "2025-12-23",
         "previous_level": "Bounded",
         "schema_version": "1.0.0",
         "test_coverage": "430+ tests (design)"
