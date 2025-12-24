@@ -8,9 +8,108 @@ executions. Evidence is stored as JSON with hash-based IDs for deduplication.
 import hashlib
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
+
+
+# ============================================================================
+# MALICIOUS PAYLOAD SANITIZATION (Prompt X)
+# ============================================================================
+
+class MaliciousPayloadError(Exception):
+    """Raised when a payload contains malicious content that cannot be sanitized."""
+    pass
+
+
+# Patterns for instruction smuggling detection
+INSTRUCTION_PATTERNS = [
+    re.compile(r"ignore\s+previous\s+instructions?", re.IGNORECASE),
+    re.compile(r"^System:", re.MULTILINE),
+    re.compile(r"^Assistant:", re.MULTILINE),
+    re.compile(r"You are ChatGPT", re.IGNORECASE),
+    re.compile(r"^Human:", re.MULTILINE),
+    re.compile(r"```[^`]*\b(do|execute|run|perform|ignore|override)\b[^`]*```", re.IGNORECASE | re.DOTALL),
+]
+
+# Patterns that must trigger outright rejection
+FOOTER_SPOOF_PATTERN = re.compile(r"###\s*Execution\s+Provenance", re.IGNORECASE)
+IDENTITY_INJECTION_PATTERN = re.compile(r"\[\[IDENTITY_FACTS_READ_ONLY\]\]")
+
+# Pattern for citation token scrubbing
+CITATION_TOKEN_PATTERN = re.compile(r"\[EVID:[a-zA-Z0-9:_-]+\]")
+
+
+def sanitize_payload(payload: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+    """
+    Sanitize a payload by removing malicious content.
+    
+    Args:
+        payload: The payload dict to sanitize
+        
+    Returns:
+        Tuple of (sanitized_payload, was_sanitized)
+        
+    Raises:
+        MaliciousPayloadError: If payload contains footer spoof or identity injection
+    """
+    if not payload:
+        return payload, False
+    
+    was_sanitized = False
+    sanitized = {}
+    
+    for key, value in payload.items():
+        if isinstance(value, str):
+            sanitized_value, field_sanitized = _sanitize_string(value)
+            sanitized[key] = sanitized_value
+            if field_sanitized:
+                was_sanitized = True
+        elif isinstance(value, dict):
+            nested, nested_sanitized = sanitize_payload(value)
+            sanitized[key] = nested
+            if nested_sanitized:
+                was_sanitized = True
+        else:
+            sanitized[key] = value
+    
+    return sanitized, was_sanitized
+
+
+def _sanitize_string(text: str) -> Tuple[str, bool]:
+    """
+    Sanitize a single string value.
+    
+    Returns:
+        Tuple of (sanitized_text, was_sanitized)
+        
+    Raises:
+        MaliciousPayloadError: If text contains footer spoof or identity injection
+    """
+    # Check for footer spoofing - reject outright
+    if FOOTER_SPOOF_PATTERN.search(text):
+        raise MaliciousPayloadError("Footer spoofing detected: Execution Provenance in payload")
+    
+    # Check for identity injection - reject outright
+    if IDENTITY_INJECTION_PATTERN.search(text):
+        raise MaliciousPayloadError("Malicious identity injection attempt detected")
+    
+    was_sanitized = False
+    result = text
+    
+    # Strip instruction patterns
+    for pattern in INSTRUCTION_PATTERNS:
+        if pattern.search(result):
+            result = pattern.sub("[REDACTED]", result)
+            was_sanitized = True
+    
+    # Scrub citation tokens
+    if CITATION_TOKEN_PATTERN.search(result):
+        result = CITATION_TOKEN_PATTERN.sub("[CITATION_REMOVED]", result)
+        was_sanitized = True
+    
+    return result, was_sanitized
 
 
 class EvidenceStore:
@@ -71,23 +170,35 @@ class EvidenceStore:
         hash_digest = hashlib.sha256(normalized.encode()).hexdigest()[:12]
         return f"ev_{hash_digest}"
     
-    def save(self, payload: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None) -> str:
+    def save(self, payload: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None, custom_id: Optional[str] = None) -> str:
         """
         Save a payload to the evidence store.
         
         Args:
             payload: The data to store (must be JSON-serializable)
             metadata: Optional metadata to attach (source, type, etc.)
+            custom_id: Optional manual ID (e.g. for deterministic final reports)
         
         Returns:
-            The hash-based ID of the stored evidence
+            The ID of the stored evidence (custom_id if provided)
+            
+        Raises:
+            MaliciousPayloadError: If payload contains footer spoof or identity injection
         """
-        evidence_id = self._generate_id(payload)
+        # Sanitize payload before storage (Prompt X)
+        sanitized_payload, was_sanitized = sanitize_payload(payload)
+        
+        # Prepare metadata
+        final_metadata = metadata.copy() if metadata else {}
+        if was_sanitized:
+            final_metadata["sanitized"] = True
+        
+        evidence_id = custom_id if custom_id else self._generate_id(sanitized_payload)
         
         store = self._read_store()
         store[evidence_id] = {
-            "payload": payload,
-            "metadata": metadata or {},
+            "payload": sanitized_payload,
+            "metadata": final_metadata,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         self._write_store(store)

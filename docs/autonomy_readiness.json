@@ -1,0 +1,46 @@
+{
+    "autonomy_level": "Strategic",
+    "hard_limits": [
+        "identity_writes_restricted_to_reporter",
+        "max_retry_attempts_5_per_run",
+        "max_retry_cost_100_units",
+        "proactive_confidence_threshold_0.85",
+        "routing_weight_bounds_0.1_to_2.0",
+        "learning_rate_immutable_0.2",
+        "policy_memory_read_only_during_run",
+        "goal_reformulation_confidence_0.9",
+        "goal_reformulation_similarity_0.95",
+        "ledger_write_before_learning_updates"
+    ],
+    "justification": "System upgraded from Bounded to Strategic Autonomy through: (1) cross-run Policy Memory for routing adaptation, (2) skill routing learning loop with bounded updates, (3) counterfactual evaluation for learning from paths not taken, (4) controlled goal reformulation with strict guardrails. System is NOT General Autonomy because: (a) cannot create new goals, (b) cannot modify skills or beliefs, (c) cannot bypass abort conditions, (d) learning is scoped to strategy only. System is NOT Unbounded because: (a) all learning has caps and decay, (b) determinism is preserved via snapshot isolation, (c) operators retain kill-switch authority.",
+    "metadata": {
+        "assessment_date": "2024-12-23",
+        "previous_level": "Bounded",
+        "schema_version": "1.0.0",
+        "test_coverage": "430+ tests (design)"
+    },
+    "not_general_because": [
+        "cannot_create_new_goals",
+        "cannot_modify_skills",
+        "cannot_modify_beliefs",
+        "cannot_bypass_aborts",
+        "learning_scoped_to_strategy_only",
+        "no_cross_domain_transfer"
+    ],
+    "not_unbounded_because": [
+        "all_weights_have_bounds",
+        "learning_rate_is_immutable",
+        "decay_prevents_runaway",
+        "determinism_preserved",
+        "operators_retain_authority",
+        "explicit_non_goals_enforced"
+    ],
+    "unsafe_to_deploy_if": [
+        "policy_memory_write_can_bypass_ledger",
+        "learning_rate_can_be_modified",
+        "weight_bounds_can_be_circumvented",
+        "goal_reformulation_bypasses_confidence_check",
+        "snapshot_isolation_is_broken",
+        "kill_switches_lose_authority_over_learned_behavior"
+    ]
+}

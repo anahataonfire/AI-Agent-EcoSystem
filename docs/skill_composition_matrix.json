@@ -1,0 +1,119 @@
+{
+    "compositions": [
+        {
+            "abort_code": "DTL-COMP-001",
+            "composition": [
+                "retry_strategy",
+                "failure_attribution"
+            ],
+            "failure_mode": "attribution_confidence_too_low_to_classify_retry",
+            "intended_emergence": "intelligent_retry_based_on_root_cause"
+        },
+        {
+            "abort_code": "DTL-COMP-002",
+            "composition": [
+                "failure_attribution",
+                "adaptation"
+            ],
+            "failure_mode": "repeated_unknown_attribution_blocks_adaptation",
+            "intended_emergence": "mid_run_recovery_from_classified_failures"
+        },
+        {
+            "abort_code": "DTL-COMP-003",
+            "composition": [
+                "context_budget",
+                "plan_validation"
+            ],
+            "failure_mode": "plan_too_large_for_context_window",
+            "intended_emergence": "plans_automatically_fit_token_budget"
+        },
+        {
+            "abort_code": "DTL-COMP-004",
+            "composition": [
+                "skill_scoring",
+                "state_memory"
+            ],
+            "failure_mode": "memory_decay_conflicts_with_score_updates",
+            "intended_emergence": "skill_routing_improves_over_time"
+        },
+        {
+            "abort_code": "DTL-COMP-005",
+            "composition": [
+                "proactive",
+                "run_ledger"
+            ],
+            "failure_mode": "proactive_action_without_ledger_log",
+            "intended_emergence": "auditable_autonomous_decisions"
+        },
+        {
+            "abort_code": "DTL-COMP-006",
+            "composition": [
+                "self_improve",
+                "skill_scoring"
+            ],
+            "failure_mode": "improvement_recommendations_conflict_with_scores",
+            "intended_emergence": "data_driven_priority_adjustments"
+        },
+        {
+            "abort_code": "DTL-COMP-007",
+            "composition": [
+                "evals",
+                "retry_strategy"
+            ],
+            "failure_mode": "eval_failure_triggers_infinite_retry",
+            "intended_emergence": "failed_evals_abort_not_retry"
+        },
+        {
+            "abort_code": "DTL-COMP-008",
+            "composition": [
+                "adaptation",
+                "state_memory"
+            ],
+            "failure_mode": "adaptation_ignores_memory_of_past_failures",
+            "intended_emergence": "adaptation_uses_historical_context"
+        },
+        {
+            "abort_code": "DTL-COMP-009",
+            "composition": [
+                "context_budget",
+                "evals"
+            ],
+            "failure_mode": "eval_context_exceeds_budget",
+            "intended_emergence": "evals_respect_token_limits"
+        },
+        {
+            "abort_code": "DTL-COMP-010",
+            "composition": [
+                "plan_validation",
+                "adaptation",
+                "retry_strategy"
+            ],
+            "failure_mode": "replanning_exceeds_retry_cap",
+            "intended_emergence": "bounded_adaptive_replanning"
+        },
+        {
+            "abort_code": "DTL-COMP-011",
+            "composition": [
+                "proactive",
+                "skill_scoring",
+                "self_improve"
+            ],
+            "failure_mode": "proactive_action_on_low_scoring_skill",
+            "intended_emergence": "proactive_only_with_high_confidence_skills"
+        },
+        {
+            "abort_code": "DTL-COMP-012",
+            "composition": [
+                "failure_attribution",
+                "evals",
+                "run_ledger"
+            ],
+            "failure_mode": "attribution_not_logged_before_eval_abort",
+            "intended_emergence": "complete_audit_trail_for_failures"
+        }
+    ],
+    "metadata": {
+        "minimum_compositions": 10,
+        "schema_version": "1.0.0"
+    }
+}

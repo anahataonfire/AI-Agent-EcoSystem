@@ -1,0 +1,14 @@
+{
+    "runs": [],
+    "summary": {
+        "selection_stability": null,
+        "abort_frequency": null,
+        "avg_cost": null,
+        "decision_entropy": null
+    },
+    "metadata": {
+        "schema_version": "1.0.0",
+        "generated": "2024-12-23",
+        "min_runs_required": 10
+    }
+}

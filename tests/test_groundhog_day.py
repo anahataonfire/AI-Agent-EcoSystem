@@ -159,6 +159,59 @@ class TestGroundhogDayDetection:
         assert result is not None
         assert "[[CLARIFICATION_REQUIRED]]" in result
 
+    def test_override_tokens_bypass_check(self):
+        """Query containing override tokens should proceed even if hash matches."""
+        import hashlib
+        
+        # Base query logic that WOULD match if not for the override check
+        # NOTE: In reality, adding 'force' changes the hash, so it naturally mis-matches 
+        # a prior run that didn't have 'force'.
+        # TO TEST THE LOGIC explicitly, we must simulate a case where the PRIOR run
+        # ALSO had 'force', or we artificially match the hashes.
+        
+        # Let's simple use a query that contains 'force' and manually align expectation
+        # If I run "backup force" -> and last run was "backup force" 5 mins ago.
+        # It SHOULD TRIGGER groundhog day (same hash/time).
+        # But because of the token, it MUST NOT.
+        
+        query = "Run backup force"
+        query_hash = hashlib.sha256(query.encode()).hexdigest()[:16]
+        recent_time = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        
+        identity = {
+            "last_successful_run": {
+                "query_hash": query_hash, # Same hash!
+                "completed_at": recent_time,
+                "evidence_count": 5,
+                "sources_used": ["rss:reuters"]
+            }
+        }
+        
+        # 1. Verify it BYPASSES due to 'force'
+        result = check_groundhog_day(query, identity)
+        assert result is None  # Should proceed
+        
+        # 2. Test "ignore previous"
+        query2 = "ignore previous runs please"
+        query2_hash = hashlib.sha256(query2.encode()).hexdigest()[:16]
+        identity["last_successful_run"]["query_hash"] = query2_hash
+        assert check_groundhog_day(query2, identity) is None
+
+        # 3. Test "refresh anyway"
+        query3 = "Just refresh anyway ok"
+        query3_hash = hashlib.sha256(query3.encode()).hexdigest()[:16]
+        identity["last_successful_run"]["query_hash"] = query3_hash
+        assert check_groundhog_day(query3, identity) is None
+        
+        # 4. Control: Same setup WITHOUT token should trigger
+        query_control = "Run backup normally"
+        query_control_hash = hashlib.sha256(query_control.encode()).hexdigest()[:16]
+        identity["last_successful_run"]["query_hash"] = query_control_hash
+        
+        result_control = check_groundhog_day(query_control, identity)
+        assert result_control is not None # Should trigger
+
+
 
 class TestGroundhogDayIntegration:
     """Test integration with pruned_thinker_node and reporter_node."""

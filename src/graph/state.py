@@ -102,9 +102,14 @@ class RunState(BaseModel):
             "planned_steps": 0,
             "successful_steps": 0,
             "wasted_tokens": 0,
-            "alignment_score": 0.0
+            "alignment_score": 0.0,
+            # Security telemetry (Prompt V)
+            "grounding_failures": 0,
+            "evidence_rejections": 0,
+            "reuse_denied_reason": None,
+            "security_mode": "normal"  # normal | zero_trust | abort
         },
-        description="Metrics for agent performance and cost"
+        description="Metrics for agent performance, cost, and security events"
     )
     
     # NEW: Context Buffer
