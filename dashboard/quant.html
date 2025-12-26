@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quant v0.1 Dashboard</title>
+    <style>
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-card: #1a1a25;
+            --accent: #6366f1;
+            --accent-glow: rgba(99, 102, 241, 0.3);
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --border: rgba(255,255,255,0.08);
+        }
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+        
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 32px;
+            padding-bottom: 24px;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .logo-icon {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, var(--accent), #8b5cf6);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 18px;
+        }
+        
+        .logo h1 {
+            font-size: 24px;
+            font-weight: 600;
+        }
+        
+        .logo span {
+            color: var(--text-secondary);
+            font-size: 14px;
+            font-weight: 400;
+        }
+        
+        .status-bar {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+        }
+        
+        .status-badge {
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .status-badge.live { background: rgba(16, 185, 129, 0.15); color: var(--success); }
+        .status-badge.stale { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
+        .status-badge.error { background: rgba(239, 68, 68, 0.15); color: var(--danger); }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-badge.live .status-dot { background: var(--success); }
+        .status-badge.stale .status-dot { background: var(--warning); }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 32px;
+        }
+        
+        .card {
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 20px;
+            border: 1px solid var(--border);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+        }
+        
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        
+        .card-title {
+            font-size: 14px;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+        
+        .card-value {
+            font-size: 28px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+        
+        .card-change {
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        
+        .card-change.up { color: var(--success); }
+        .card-change.down { color: var(--danger); }
+        
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .candidates-table {
+            background: var(--bg-card);
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+            margin-bottom: 32px;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        th, td {
+            padding: 16px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        th {
+            background: var(--bg-secondary);
+            font-weight: 500;
+            color: var(--text-secondary);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        tr:hover { background: rgba(255,255,255,0.02); }
+        
+        .signal-badge {
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        
+        .signal-badge.buy { background: rgba(16, 185, 129, 0.15); color: var(--success); }
+        .signal-badge.sell { background: rgba(239, 68, 68, 0.15); color: var(--danger); }
+        .signal-badge.hold { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
+        .signal-badge.no-trade { background: rgba(148, 163, 184, 0.15); color: var(--text-secondary); }
+        
+        .score-bar {
+            width: 100px;
+            height: 6px;
+            background: var(--bg-secondary);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        
+        .score-bar-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.3s;
+        }
+        
+        .score-bar-fill.high { background: var(--success); }
+        .score-bar-fill.medium { background: var(--warning); }
+        .score-bar-fill.low { background: var(--danger); }
+        
+        .gatekeeper-panel {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+        
+        .gate-card {
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 20px;
+            border: 1px solid var(--border);
+        }
+        
+        .gate-list {
+            list-style: none;
+            margin-top: 12px;
+        }
+        
+        .gate-list li {
+            padding: 8px 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .gate-list li:last-child { border-bottom: none; }
+        
+        .gate-icon { font-size: 16px; }
+        .gate-icon.pass { color: var(--success); }
+        .gate-icon.fail { color: var(--danger); }
+        
+        .advisory-banner {
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(139, 92, 246, 0.1));
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            border-radius: 12px;
+            padding: 16px 20px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-top: 24px;
+        }
+        
+        .advisory-banner .icon { font-size: 24px; }
+        
+        .meta-info {
+            display: flex;
+            gap: 24px;
+            margin-top: 24px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        
+        .meta-info code {
+            background: var(--bg-secondary);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'SF Mono', monospace;
+        }
+        
+        @media (max-width: 1200px) {
+            .grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        
+        @media (max-width: 768px) {
+            .grid { grid-template-columns: 1fr; }
+            .gatekeeper-panel { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <div class="logo-icon">Q</div>
+                <div>
+                    <h1>Quant <span>v0.1</span></h1>
+                </div>
+            </div>
+            <div class="status-bar">
+                <div class="status-badge stale" id="market-status">
+                    <span class="status-dot"></span>
+                    <span id="status-text">Loading...</span>
+                </div>
+                <div id="last-update" style="font-size: 13px; color: var(--text-secondary);"></div>
+            </div>
+        </header>
+        
+        <div class="grid" id="price-cards">
+            <!-- Price cards populated by JS -->
+        </div>
+        
+        <h2 class="section-title">📊 Candidates</h2>
+        <div class="candidates-table">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Asset</th>
+                        <th>Signal</th>
+                        <th>Type</th>
+                        <th>Signal Quality</th>
+                        <th>Crowding Risk</th>
+                        <th>Thesis</th>
+                    </tr>
+                </thead>
+                <tbody id="candidates-body">
+                    <!-- Candidates populated by JS -->
+                </tbody>
+            </table>
+        </div>
+        
+        <h2 class="section-title">🛡️ Gatekeeper Status</h2>
+        <div class="gatekeeper-panel">
+            <div class="gate-card">
+                <h3 style="font-size: 14px; color: var(--text-secondary);">Rules Triggered</h3>
+                <ul class="gate-list" id="rules-triggered">
+                    <!-- Rules populated by JS -->
+                </ul>
+            </div>
+            <div class="gate-card">
+                <h3 style="font-size: 14px; color: var(--text-secondary);">Narrative Traps Active</h3>
+                <ul class="gate-list" id="traps-active">
+                    <!-- Traps populated by JS -->
+                </ul>
+            </div>
+        </div>
+        
+        <div class="advisory-banner">
+            <span class="icon">⚠️</span>
+            <div>
+                <strong>ADVISORY ONLY</strong> — Quant v0.1 is analysis-only. No trade execution, position sizing, or capital allocation.
+            </div>
+        </div>
+        
+        <div class="meta-info">
+            <div>Run ID: <code id="run-id">—</code></div>
+            <div>Hash: <code id="hash">—</code></div>
+            <div>Snapshot: <code id="snapshot-id">—</code></div>
+        </div>
+    </div>
+    
+    <script>
+        const DATA_PATH = '../data/quant_outputs/premarket_2025-12-24.json';
+        
+        async function loadData() {
+            try {
+                const response = await fetch(DATA_PATH);
+                if (!response.ok) throw new Error('Data not found');
+                const data = await response.json();
+                renderDashboard(data);
+            } catch (error) {
+                console.error('Failed to load data:', error);
+                document.getElementById('status-text').textContent = 'Data Error';
+                document.getElementById('market-status').className = 'status-badge error';
+            }
+        }
+        
+        function renderDashboard(data) {
+            // Update status
+            const status = data.market_context?.market_status || 'UNKNOWN';
+            const statusEl = document.getElementById('market-status');
+            const statusText = document.getElementById('status-text');
+            
+            if (status === 'LIVE') {
+                statusEl.className = 'status-badge live';
+                statusText.textContent = 'LIVE';
+            } else if (status === 'STALE_DATA') {
+                statusEl.className = 'status-badge stale';
+                statusText.textContent = 'STALE DATA';
+            } else {
+                statusEl.className = 'status-badge stale';
+                statusText.textContent = status;
+            }
+            
+            // Update last update time
+            const timestamp = new Date(data.timestamp);
+            document.getElementById('last-update').textContent = timestamp.toLocaleString();
+            
+            // Render price cards
+            const priceCards = document.getElementById('price-cards');
+            const assets = data.market_data || {};
+            priceCards.innerHTML = Object.entries(assets).map(([symbol, info]) => `
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">${symbol}</span>
+                    </div>
+                    <div class="card-value">$${info?.price?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) || '—'}</div>
+                    <div class="card-change">
+                        Bid: $${info?.bid?.toFixed(2) || '—'} / Ask: $${info?.ask?.toFixed(2) || '—'}
+                    </div>
+                </div>
+            `).join('');
+            
+            // Render candidates
+            const tbody = document.getElementById('candidates-body');
+            const candidates = data.candidates || [];
+            
+            if (candidates.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="6" style="text-align: center; color: var(--text-secondary); padding: 40px;">
+                            ${data.gatekeeper_applied?.force_no_trade ? '🛑 FORCE_NO_TRADE active — no candidates generated' : 'No candidates in this run'}
+                        </td>
+                    </tr>
+                `;
+            } else {
+                tbody.innerHTML = candidates.map(c => {
+                    const signalClass = c.signal?.toLowerCase().replace('_', '-') || 'hold';
+                    const sqClass = c.signal_quality_score > 65 ? 'high' : c.signal_quality_score > 45 ? 'medium' : 'low';
+                    const crClass = c.crowding_risk_score < 40 ? 'high' : c.crowding_risk_score < 65 ? 'medium' : 'low';
+                    
+                    return `
+                        <tr>
+                            <td><strong>${c.asset}</strong></td>
+                            <td><span class="signal-badge ${signalClass}">${c.signal}</span></td>
+                            <td style="color: var(--text-secondary)">${c.trade_type || '—'}</td>
+                            <td>
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <div class="score-bar"><div class="score-bar-fill ${sqClass}" style="width: ${c.signal_quality_score}%"></div></div>
+                                    <span>${c.signal_quality_score}</span>
+                                </div>
+                            </td>
+                            <td>
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <div class="score-bar"><div class="score-bar-fill ${crClass}" style="width: ${c.crowding_risk_score}%"></div></div>
+                                    <span>${c.crowding_risk_score}</span>
+                                </div>
+                            </td>
+                            <td style="max-width: 300px; font-size: 13px; color: var(--text-secondary)">${c.thesis || '—'}</td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+            
+            // Render rules triggered
+            const rulesEl = document.getElementById('rules-triggered');
+            const rules = data.gatekeeper_applied?.rules_triggered || [];
+            if (rules.length === 0) {
+                rulesEl.innerHTML = '<li><span class="gate-icon pass">✓</span> No rules triggered</li>';
+            } else {
+                rulesEl.innerHTML = rules.map(r => `<li><span class="gate-icon fail">✗</span> ${r}</li>`).join('');
+            }
+            
+            // Render traps
+            const trapsEl = document.getElementById('traps-active');
+            const traps = data.summary?.narrative_traps_active || [];
+            if (traps.length === 0) {
+                trapsEl.innerHTML = '<li><span class="gate-icon pass">✓</span> No active traps</li>';
+            } else {
+                trapsEl.innerHTML = traps.map(t => `<li><span class="gate-icon fail">⚠</span> ${t}</li>`).join('');
+            }
+            
+            // Update meta
+            document.getElementById('run-id').textContent = data.run_id || '—';
+            document.getElementById('hash').textContent = data.determinism_hash || '—';
+            document.getElementById('snapshot-id').textContent = data.snapshots?.market_snapshot_id || '—';
+        }
+        
+        // Load on page load
+        loadData();
+        
+        // Auto-refresh every 60 seconds
+        setInterval(loadData, 60000);
+    </script>
+</body>
+</html>
