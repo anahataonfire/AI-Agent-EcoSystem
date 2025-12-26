@@ -7,6 +7,15 @@ Ensures agents don't converge into generic behavior.
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def reset_manifest_state():
+    """Reset AGENT_MANIFESTS before and after each test to ensure isolation."""
+    from src.agents.manifest import reset_manifests
+    reset_manifests()  # Before test
+    yield
+    reset_manifests()  # After test
+
+
 class TestAgentDecisionPaths:
     """Tests that agents take different decision paths."""
 

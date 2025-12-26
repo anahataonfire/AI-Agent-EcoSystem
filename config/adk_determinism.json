@@ -1,0 +1,20 @@
+{
+    "$comment": "ADK Determinism Configuration - DTL v2.0",
+    "version": "1.0.0",
+    "adk_version": "1.21.0",
+    "runtime": {
+        "retries": 0,
+        "timeout_seconds": 300,
+        "parallel_agents": false,
+        "deterministic_seed": 42
+    },
+    "orchestration": {
+        "mode": "sequential",
+        "fail_fast": true,
+        "replay_enabled": true
+    },
+    "telemetry": {
+        "enabled": false,
+        "export_traces": false
+    }
+}

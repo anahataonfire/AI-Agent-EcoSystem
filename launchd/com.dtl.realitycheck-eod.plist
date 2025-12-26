@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.dtl.realitycheck-eod</string>
+    
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0/.venv/bin/python</string>
+        <string>-m</string>
+        <string>src.cli</string>
+        <string>run</string>
+        <string>--mode=live</string>
+        <string>--job=realitycheck_eod</string>
+    </array>
+    
+    <key>WorkingDirectory</key>
+    <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0</string>
+    
+    <!-- P1-4: Run on load if job was missed -->
+    <key>RunAtLoad</key>
+    <true/>
+    
+    <!-- Run at 17:00 HST (after market close) -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>17</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    
+    <!-- P1-5: Log paths -->
+    <key>StandardOutPath</key>
+    <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0/logs/realitycheck_eod.log</string>
+    
+    <key>StandardErrorPath</key>
+    <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0/logs/realitycheck_eod_error.log</string>
+    
+    <!-- P1-6: Environment with TZ and PYTHONPATH -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0</string>
+        <key>DTL_MODE</key>
+        <string>live</string>
+        <key>TZ</key>
+        <string>Pacific/Honolulu</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/Users/adamc/.local/bin</string>
+    </dict>
+    
+    <!-- Restart if job dies unexpectedly -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+</dict>
+</plist>

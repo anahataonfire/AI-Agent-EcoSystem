@@ -1,0 +1,63 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Degraded Mode Policy",
+    "description": "Policy for DTL v2.0 DEGRADED_MODE behavior",
+    "version": "1.0.0",
+    "trigger_conditions": {
+        "description": "Conditions that trigger DEGRADED_MODE",
+        "conditions": [
+            {
+                "id": "COMMIT_GATE_REJECTION",
+                "description": "CommitGate rejects bundle",
+                "action": "ENTER_DEGRADED"
+            },
+            {
+                "id": "EVIDENCE_STALE",
+                "description": "All evidence exceeds TTL",
+                "action": "ENTER_DEGRADED"
+            },
+            {
+                "id": "KILL_SWITCH_ACTIVE",
+                "description": "DISABLE_WRITES kill switch enabled",
+                "action": "ENTER_DEGRADED"
+            },
+            {
+                "id": "MANIFEST_MISSING",
+                "description": "Agent manifest not found or invalid",
+                "action": "HALT"
+            },
+            {
+                "id": "FIREWALL_REJECTION",
+                "description": "InterAgentFirewall rejects envelope",
+                "action": "ENTER_DEGRADED"
+            }
+        ]
+    },
+    "degraded_behavior": {
+        "description": "What changes in DEGRADED_MODE",
+        "writes_blocked": true,
+        "analysis_allowed": true,
+        "report_generated": true,
+        "persistence": "NONE",
+        "alert_required": true
+    },
+    "recovery": {
+        "description": "How to recover from DEGRADED_MODE",
+        "auto_recovery": false,
+        "required_actions": [
+            "Operator acknowledges alert",
+            "Root cause identified",
+            "System state manually reset"
+        ],
+        "recovery_command": "dtl recover --run_id=<RUN_ID>"
+    },
+    "alerts": {
+        "channels": [
+            "console",
+            "log"
+        ],
+        "log_path": "data/alerts/degraded_mode.log",
+        "severity": "WARNING",
+        "message_template": "DTL DEGRADED_MODE: {trigger_condition} at {timestamp}. Run ID: {run_id}"
+    }
+}

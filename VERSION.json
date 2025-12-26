@@ -1,0 +1,28 @@
+{
+    "version": "2.0.0",
+    "name": "DTL - Dynamic Trading Layer",
+    "release_date": "2025-12-26",
+    "changelog": {
+        "2.0.0": {
+            "date": "2025-12-26",
+            "summary": "Full DTL v2.0 implementation with ADK orchestration",
+            "changes": [
+                "8-step enforcement order with firewall validation",
+                "CommitGate with 7 validation checks",
+                "SKILL.md capability manifests for all agents",
+                "DegradedModeController for state transitions",
+                "Immutable stores: IdentityStore, EvidenceStore, RunLedger",
+                "544 tests passing (100% coverage on core components)"
+            ]
+        },
+        "1.0.0": {
+            "date": "2024-12-24",
+            "summary": "Initial release",
+            "changes": [
+                "Basic quant premarket workflow",
+                "RealityCheck EOD grading",
+                "Evidence store integration"
+            ]
+        }
+    }
+}

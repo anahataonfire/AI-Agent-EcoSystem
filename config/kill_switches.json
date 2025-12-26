@@ -1,0 +1,45 @@
+{
+    "$comment": "Kill Switches Configuration - DTL v2.0",
+    "$schema": "https://dtl.local/schemas/kill_switches.json",
+    "version": "2.0.0",
+    "switches": {
+        "DISABLE_LEARNING": {
+            "enabled": true,
+            "description": "Prevents any learning or model updates",
+            "enforcement": "hard",
+            "blocks": [
+                "routing_statistics_write",
+                "strategy_adaptation"
+            ]
+        },
+        "DISABLE_REUSE": {
+            "enabled": false,
+            "description": "Prevents reuse of cached evidence or prior outputs",
+            "enforcement": "hard",
+            "blocks": [
+                "evidence_cache_hit",
+                "prior_run_reference"
+            ]
+        },
+        "DISABLE_WRITES": {
+            "enabled": false,
+            "description": "Blocks all writes to immutable stores",
+            "enforcement": "hard",
+            "blocks": [
+                "commit_gate_pass"
+            ]
+        },
+        "FORCE_DEGRADED_MODE": {
+            "enabled": false,
+            "description": "Forces system into degraded mode for testing",
+            "enforcement": "soft",
+            "blocks": []
+        }
+    },
+    "enforcement_order": [
+        "DISABLE_WRITES",
+        "DISABLE_LEARNING",
+        "DISABLE_REUSE",
+        "FORCE_DEGRADED_MODE"
+    ]
+}

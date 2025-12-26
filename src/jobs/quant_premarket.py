@@ -47,8 +47,26 @@ def create_snapshot_ids() -> dict:
 
 def load_narrative_traps() -> list:
     """Load active narrative traps from memory."""
-    # TODO: Load from narrative_trap_memory.json
-    return ["GME-MSFT-2024-001"]
+    import json
+    import os
+    
+    # Path to persistent memory (in .gemini artifacts dir or local data dir)
+    trap_file = "data/narrative_trap_memory.json"
+    
+    # If using the artifact path from earlier in session, we might need a symlink or config
+    # For now, let's look in the local project data dir first
+    if os.path.exists(trap_file):
+        try:
+            with open(trap_file, 'r') as f:
+                data = json.load(f)
+                # Return list of trap IDs from the active_traps dict
+                return list(data.get("active_traps", {}).keys())
+        except Exception as e:
+            print(f"Warning: Failed to load trap memory: {e}")
+            return []
+            
+    # Default fallback if file missing
+    return []
 
 
 def fetch_market_data() -> dict:

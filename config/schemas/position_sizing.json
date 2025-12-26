@@ -1,0 +1,86 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "$id": "https://dtl.local/schemas/position_sizing.json",
+    "title": "PositionSizingLimits",
+    "description": "Position sizing and risk limits - enforced by CommitGate",
+    "type": "object",
+    "properties": {
+        "version": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "global_limits": {
+            "type": "object",
+            "properties": {
+                "max_position_pct": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "default": 5,
+                    "description": "Maximum position size as percentage of portfolio"
+                },
+                "max_daily_loss_pct": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "default": 2,
+                    "description": "Maximum daily loss before circuit breaker"
+                },
+                "max_concentration_single_asset": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "default": 25
+                },
+                "min_cash_reserve_pct": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "default": 10
+                }
+            }
+        },
+        "asset_limits": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {
+                    "max_position_pct": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 100
+                    },
+                    "max_notional_usd": {
+                        "type": "number",
+                        "minimum": 0
+                    },
+                    "blocked": {
+                        "type": "boolean",
+                        "default": false
+                    }
+                }
+            }
+        },
+        "circuit_breakers": {
+            "type": "object",
+            "properties": {
+                "daily_loss_halt_threshold_pct": {
+                    "type": "number",
+                    "default": 5
+                },
+                "consecutive_loss_halt_count": {
+                    "type": "integer",
+                    "default": 3
+                },
+                "volatility_halt_vix_threshold": {
+                    "type": "number",
+                    "default": 35
+                }
+            }
+        }
+    },
+    "required": [
+        "version",
+        "global_limits"
+    ]
+}

@@ -14,27 +14,35 @@ class TestGroundhogReuseTrue:
             yield mock
 
     def test_get_report_returns_markdown(self, mock_store):
-        # Setup
+        # Setup - use get_with_metadata which is what the code actually calls
+        from datetime import datetime, timezone
         mock_instance = mock_store.return_value
-        mock_instance.get.return_value = {"markdown": "# Full Report"}
+        mock_instance.get_with_metadata.return_value = {
+            "payload": {"markdown": "# Full Report\n\n### Execution Provenance\nTest"},
+            "metadata": {"type": "final_report", "query_hash": "abc1234"}
+        }
         
         result = get_latest_final_report_by_query_hash("abc1234")
         
-        assert result == "# Full Report"
-        mock_instance.get.assert_called_with("report:abc1234")
+        assert result == "# Full Report\n\n### Execution Provenance\nTest"
+        mock_instance.get_with_metadata.assert_called_with("report:abc1234")
 
     def test_get_report_returns_none_if_missing(self, mock_store):
         mock_instance = mock_store.return_value
-        mock_instance.get.return_value = None
+        mock_instance.get_with_metadata.return_value = None
         
         result = get_latest_final_report_by_query_hash("abc1234")
         
         assert result is None
 
     def test_A_path_returns_full_report_if_available(self, mock_store):
-        # Setup specific mock behavior
+        # Setup specific mock behavior - use get_with_metadata
+        from datetime import datetime, timezone
         mock_instance = mock_store.return_value
-        mock_instance.get.return_value = {"markdown": "# Full Content from Store"}
+        mock_instance.get_with_metadata.return_value = {
+            "payload": {"markdown": "# Full Content from Store\n\n### Execution Provenance\nTest"},
+            "metadata": {"type": "final_report", "query_hash": "abc1234"}
+        }
         
         # Mock State
         clarification_msg = "[[CLARIFICATION_REQUIRED]] ... reply A or B ..."
@@ -67,7 +75,7 @@ class TestGroundhogReuseTrue:
     def test_A_path_falls_back_to_metadata(self, mock_store):
         # Setup: Missing evidence
         mock_instance = mock_store.return_value
-        mock_instance.get.return_value = None
+        mock_instance.get_with_metadata.return_value = None
         
         # Mock State (Same as above)
         clarification_msg = "[[CLARIFICATION_REQUIRED]] ... reply A or B ..."
@@ -97,3 +105,4 @@ class TestGroundhogReuseTrue:
         assert "Prior Run Summary (Metadata Only)" in msg_content
         assert "evidence cache miss" in msg_content
         assert "Evidence Count:** 99" in msg_content
+

@@ -143,3 +143,21 @@ def validate_manifest_immutable() -> bool:
     """
     expected_agents = {"thinker", "sanitizer", "executor", "reporter"}
     return set(AGENT_MANIFESTS.keys()) == expected_agents
+
+
+# Original manifest state for reset (deep copy)
+import copy
+_ORIGINAL_MANIFESTS = copy.deepcopy(AGENT_MANIFESTS)
+
+
+def reset_manifests() -> None:
+    """
+    Reset AGENT_MANIFESTS to original state.
+    
+    Used by tests to ensure isolation - call in fixture teardown
+    to prevent test pollution.
+    """
+    global AGENT_MANIFESTS
+    AGENT_MANIFESTS.clear()
+    AGENT_MANIFESTS.update(copy.deepcopy(_ORIGINAL_MANIFESTS))
+

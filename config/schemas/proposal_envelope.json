@@ -1,0 +1,56 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "$id": "https://dtl.local/schemas/proposal_envelope.json",
+    "title": "ProposalEnvelope",
+    "description": "Wrapper for all agent outputs - enables replay and prevents cross-run leakage",
+    "type": "object",
+    "required": [
+        "agent_id",
+        "schema_version",
+        "run_id",
+        "timestamp",
+        "content_hash",
+        "payload",
+        "capability_claims"
+    ],
+    "properties": {
+        "agent_id": {
+            "type": "string",
+            "pattern": "^[a-z]+-v[0-9]+\\.[0-9]+$",
+            "description": "Agent identifier with version, e.g., 'strategist-v0.1'"
+        },
+        "schema_version": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+            "description": "Semantic version of the schema"
+        },
+        "run_id": {
+            "type": "string",
+            "pattern": "^(RUN-[0-9]{8}_[0-9]{6}|TEST-[0-9]+)$",
+            "description": "Unique run identifier"
+        },
+        "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO8601 timestamp when envelope was created"
+        },
+        "content_hash": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{16,64}$",
+            "description": "SHA-256 hash of full envelope for integrity verification"
+        },
+        "payload": {
+            "type": "object",
+            "description": "The actual agent output (schema varies by agent type)"
+        },
+        "capability_claims": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "pattern": "^[a-z_]+$"
+            },
+            "description": "Capabilities claimed by this agent for this operation"
+        }
+    },
+    "additionalProperties": false
+}

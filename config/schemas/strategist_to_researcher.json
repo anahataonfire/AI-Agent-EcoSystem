@@ -1,0 +1,83 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "$id": "https://dtl.local/schemas/strategist_to_researcher.json",
+    "title": "StrategistToResearcher",
+    "description": "Inter-agent message from Strategist to Researcher",
+    "type": "object",
+    "required": [
+        "plan_id",
+        "asset_universe"
+    ],
+    "properties": {
+        "plan_id": {
+            "type": "string",
+            "pattern": "^PLAN-[A-Z0-9]{8}$",
+            "description": "Unique plan identifier"
+        },
+        "asset_universe": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": [
+                    "XAU",
+                    "XAG",
+                    "GME",
+                    "BTC",
+                    "SPY",
+                    "QQQ"
+                ]
+            },
+            "minItems": 1,
+            "maxItems": 10,
+            "description": "Assets to research"
+        },
+        "evidence_requests": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "query_type"
+                ],
+                "properties": {
+                    "query_type": {
+                        "type": "string",
+                        "enum": [
+                            "price",
+                            "news",
+                            "sentiment",
+                            "catalyst",
+                            "technical"
+                        ]
+                    },
+                    "max_sources": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 5,
+                        "default": 3
+                    },
+                    "time_horizon": {
+                        "type": "string",
+                        "enum": [
+                            "intraday",
+                            "daily",
+                            "weekly"
+                        ],
+                        "default": "daily"
+                    }
+                },
+                "additionalProperties": false
+            },
+            "maxItems": 20
+        },
+        "priority": {
+            "type": "string",
+            "enum": [
+                "low",
+                "normal",
+                "high"
+            ],
+            "default": "normal"
+        }
+    },
+    "additionalProperties": false
+}
