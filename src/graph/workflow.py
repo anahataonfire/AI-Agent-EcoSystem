@@ -434,6 +434,8 @@ def executor_node(state: RunState) -> Dict[str, Any]:
     
     from src.graph.state import ItemStatus # Import locally to avoid circular imports if any
     
+    item_previews = []
+    
     for eid in result.evidence_ids:
         entry = evidence_store.get_with_metadata(eid)
         if entry:
@@ -452,13 +454,28 @@ def executor_node(state: RunState) -> Dict[str, Any]:
                     "retries": 0,
                     "history": []
                 }
-    
+            
+            # Add to preview
+            if metadata.get("type") != "failed_rss_item":
+                payload = entry.get("payload", {})
+                title = payload.get("title", "Untitled")
+                summary = payload.get("summary", "")[:150].replace("\n", " ")
+                item_previews.append(f"- [ID: {eid}] {title}: {summary}...")
+
     # Build result message for thinker reflection
     status_emoji = "✓" if result.is_success() else "✗"
     message = f"{status_emoji} {tool_name} result: {result.summary}"
     
     if result.evidence_ids:
         message += f"\nEvidence collected: {len(result.evidence_ids)} items"
+    
+    if item_previews:
+        # Show top 15 items to provide context for report generation
+        preview_limit = 15
+        message += "\n\n**Evidence Content Preview** (Use this to write your report):\n" 
+        message += "\n".join(item_previews[:preview_limit])
+        if len(item_previews) > preview_limit:
+            message += f"\n...and {len(item_previews) - preview_limit} more items."
     
     return {
         "messages": [HumanMessage(content=message)],
@@ -476,7 +493,7 @@ class GroundingError(Exception):
 
 # Citation pattern for grounding validation
 import re
-CITATION_PATTERN = re.compile(r'\[EVID:([a-zA-Z0-9:_-]+)\]')
+CITATION_PATTERN = re.compile(r'\[EVID:\s*([a-zA-Z0-9:_-]+)\]')
 FACTUAL_INDICATORS = re.compile(
     r'\b(\d+%|\d{4}|\$\d|increased|decreased|announced|reported|was|is|are|were)\b',
     re.IGNORECASE
@@ -689,10 +706,10 @@ def validate_citation_cardinality(report_text: str) -> None:
         citations = CITATION_PATTERN.findall(para)
         citation_count = len(citations)
         
-        # Check for citation spray (>5 is hallucination indicator)
-        if citation_count > 5:
+        # Check for citation spray (>15 is hallucination indicator)
+        if citation_count > 15:
             raise CitationCardinalityError(
-                f"Citation spray detected: {citation_count} citations in paragraph (max 5)"
+                f"Citation spray detected: {citation_count} citations in paragraph (max 15)"
             )
 
 

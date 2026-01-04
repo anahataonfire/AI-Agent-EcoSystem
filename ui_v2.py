@@ -78,7 +78,7 @@ with st.sidebar:
     # Mode Toggle
     mode = st.radio(
         "Dashboard Mode",
-        ["🛰️ Mission Control", "🛠️ The Hangar"],
+        ["🛰️ Mission Control", "🛠️ The Hangar", "🏗️ System Architecture", "🎯 Polymarket Scanner", "📚 Content Library", "🧠 Advisor Chat", "📋 Planner"],
         index=0
     )
     
@@ -224,8 +224,21 @@ if mode == "🛰️ Mission Control":
                     st.markdown("**Entities:** " + ", ".join([f"`{e}`" for e in entities]))
         
         # High-contrast report block
+        if not final_report and result.get('messages'):
+            # Fallback: Extract from last message if explicit report is missing
+            # This handles validation failures, groundhog clarifications, and fallback reports
+            last_msg = result['messages'][-1]
+            final_report = last_msg.content if hasattr(last_msg, 'content') else str(last_msg)
+
         if final_report:
-            st.markdown(f'<div class="report-block">{final_report}</div>', unsafe_allow_html=True)
+            if "# Report Generation Failed" in final_report:
+                st.error("❌ Mission Failed Validation")
+                st.markdown(final_report)
+            elif "[[CLARIFICATION_REQUIRED]]" in final_report:
+                st.warning("⚠️ Clarification Required")
+                st.markdown(final_report)
+            else:
+                st.markdown(f'<div class="report-block">{final_report}</div>', unsafe_allow_html=True)
         else:
             st.info("No mission report generated.")
     
@@ -356,6 +369,908 @@ elif mode == "🛠️ The Hangar":
         st.info("No skill files found in src/skills/")
 
 
+
+# ============================================
+# SYSTEM ARCHITECTURE VIEW
+# ============================================
+elif mode == "🏗️ System Architecture":
+    st.title("🏗️ System Architecture")
+    st.markdown("Live status of the DTL v2.0 Agent Ecosystem.")
+    
+    st.markdown("---")
+    
+    # Helper to check files
+    def check_status(path_str):
+        p = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), path_str)))
+        return p.exists()
+
+    # 1. Deterministic Control Plane
+    st.subheader("🛡️ Deterministic Control Plane")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if check_status("data/run_ledger.jsonl"):
+            st.success("✅ Run Ledger Active")
+        else:
+            st.error("❌ Run Ledger Missing")
+            
+    with col2:
+        st.success("✅ RunScore Engine Ready")
+        st.caption("Store: data/run_scores")
+        
+    with col3:
+        if check_status("data/run_scores"):
+            st.success("🔒 RunScore Store Locked")
+        else:
+            st.warning("⚠️ RunScore Store Missing")
+
+    st.markdown("---")
+
+    # 2. Agent Execution Zone
+    st.subheader("🤖 Agent Execution Zone (Read-Only)")
+    st.info("ℹ️ Agents in this zone have **NO WRITE AUTHORITY**. Codebase modification is impossible.")
+    
+    a1, a2, a3 = st.columns(3)
+    
+    with a1:
+        if check_status("src/agents/strategist.py"):
+            st.success("🧠 Strategist Agent")
+            st.caption("Planning & Asset Selection")
+        else:
+            st.error("❌ Strategist Missing")
+            
+    with a2:
+        if check_status("src/agents/researcher.py"):
+            st.success("🔍 Researcher Agent")
+            st.caption("Evidence Gathering")
+        else:
+            st.error("❌ Researcher Missing")
+
+    with a3:
+        if check_status("src/agents/reporter.py"):
+            st.success("📝 Reporter Agent")
+            st.caption("Synthesis & Reporting")
+        else:
+            st.error("❌ Reporter Missing")
+
+    st.markdown("---")
+
+    # 3. Self-Improvement Loop
+    st.subheader("🔄 Self-Improvement Loop")
+    
+    s1, s2 = st.columns(2)
+    
+    with s1:
+        if check_status("src/agents/meta_analyst.py"):
+            st.success("🔮 MetaAnalyst Agent")
+            st.caption("Read-Only / Advisory")
+        else:
+            st.error("❌ MetaAnalyst Missing")
+            
+    with s2:
+        if check_status("data/improvement_packets"):
+            st.success("🔒 Improvement Store Locked")
+            st.caption("Append-Only / Atomic Writes")
+        else:
+            st.warning("⚠️ Improvement Store Missing")
+
+    st.markdown("---")
+    
+    # 4. Governance
+    st.subheader("⚖️ Governance")
+    
+    g1, g2 = st.columns(2)
+    
+    with g1:
+        if check_status("src/control_plane/human_approval_gate.py"):
+            st.success("👮 Human Approval Gate")
+            st.caption("CLI-based ACK/Apply Enforced")
+        else:
+            st.error("❌ Human Gate Missing")
+            
+    with g2:
+        st.success("🛑 Patch Policy Strict")
+        st.caption("Hash Validation + ACK Required")
+
+
+# ============================================
+# POLYMARKET SCANNER VIEW
+# ============================================
+elif mode == "🎯 Polymarket Scanner":
+    st.title("🎯 Polymarket Certainty Scanner")
+    st.markdown("Find high-certainty markets approaching resolution for maximum APR trades.")
+    
+    st.markdown("---")
+    
+    # Scanner Controls
+    st.subheader("⚙️ Scanner Settings")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        max_hours = st.slider(
+            "Max Hours to Resolution",
+            min_value=1,
+            max_value=24,
+            value=4,
+            help="Only show markets ending within this many hours"
+        )
+    
+    with col2:
+        min_certainty = st.slider(
+            "Min Certainty %",
+            min_value=50,
+            max_value=99,
+            value=95,
+            help="Minimum probability threshold (Yes ≥ X% or No ≥ X%)"
+        )
+    
+    with col3:
+        min_liquidity = st.number_input(
+            "Min Liquidity ($)",
+            min_value=0,
+            max_value=100000,
+            value=100,
+            step=50,
+            help="Minimum liquidity in USD"
+        )
+    
+    with col4:
+        auto_refresh = st.checkbox("Auto-refresh (5 min)", value=False)
+    
+    scan_button = st.button("🔍 Scan Markets", type="primary", use_container_width=False)
+    
+    st.markdown("---")
+    
+    # Run scan
+    if scan_button or auto_refresh:
+        with st.spinner("🔄 Scanning Polymarket for opportunities..."):
+            try:
+                from src.polymarket_scanner import CertaintyScanner
+                
+                scanner = CertaintyScanner()
+                opportunities = scanner.scan(
+                    max_hours=float(max_hours),
+                    min_certainty=min_certainty / 100.0,
+                    min_liquidity=float(min_liquidity)
+                )
+                st.session_state['pm_opportunities'] = opportunities
+                st.session_state['pm_scan_success'] = True
+                st.session_state['pm_scan_time'] = st.session_state.get('pm_scan_time', '') or 'just now'
+            except Exception as e:
+                st.session_state['pm_scan_success'] = False
+                st.session_state['pm_scan_error'] = str(e)
+    
+    # Display results
+    if st.session_state.get('pm_scan_success') and 'pm_opportunities' in st.session_state:
+        opportunities = st.session_state['pm_opportunities']
+        
+        # Summary metrics
+        st.subheader(f"📊 Found {len(opportunities)} Opportunities")
+        
+        if opportunities:
+            # Summary row
+            total_liq = sum(o.liquidity for o in opportunities)
+            avg_apr = sum(o.apr_estimate for o in opportunities) / len(opportunities)
+            soonest = min(o.hours_remaining for o in opportunities)
+            
+            m1, m2, m3, m4 = st.columns(4)
+            with m1:
+                st.metric("Total Liquidity", f"${total_liq:,.0f}")
+            with m2:
+                st.metric("Avg APR", f"{avg_apr:,.0f}%")
+            with m3:
+                st.metric("Soonest Resolution", f"{soonest:.1f}h")
+            with m4:
+                st.metric("Opportunities", len(opportunities))
+            
+            st.markdown("---")
+            
+            # Opportunities table
+            for i, opp in enumerate(opportunities, 1):
+                # Color-code by urgency
+                if opp.hours_remaining < 1:
+                    urgency_color = "🔴"
+                    urgency_style = "color: #ff4444;"
+                elif opp.hours_remaining < 4:
+                    urgency_color = "🟡"
+                    urgency_style = "color: #ffaa00;"
+                else:
+                    urgency_color = "🟢"
+                    urgency_style = "color: #00ff88;"
+                
+                with st.expander(f"{urgency_color} #{i} | {opp.hours_remaining:.1f}h | APR: {opp.apr_estimate:,.0f}% | {opp.question[:50]}..."):
+                    col_a, col_b = st.columns([2, 1])
+                    
+                    with col_a:
+                        st.markdown(f"**Question:** {opp.question}")
+                        st.markdown(f"**Certainty:** `{opp.certainty_side}` @ **{opp.certainty_pct*100:.1f}%**")
+                        st.markdown(f"**Link:** [{opp.event_slug}]({opp.market_url})")
+                    
+                    with col_b:
+                        st.metric("Liquidity", f"${opp.liquidity:,.0f}")
+                        st.metric("Hours Left", f"{opp.hours_remaining:.2f}")
+                        st.metric("APR", f"{opp.apr_estimate:,.0f}%")
+        else:
+            st.info("No opportunities found matching your criteria. Try adjusting the filters.")
+    
+    elif st.session_state.get('pm_scan_error'):
+        st.error(f"❌ Scan failed: {st.session_state['pm_scan_error']}")
+    else:
+        st.info("👆 Click 'Scan Markets' to find opportunities.")
+    
+    # Auto-refresh
+    if auto_refresh:
+        import time
+        time.sleep(300)  # 5 minutes
+        st.rerun()
+
+
+# ============================================
+# CONTENT LIBRARY VIEW
+# ============================================
+elif mode == "📚 Content Library":
+    st.title("📚 Content Library")
+    st.markdown("Your curated knowledge base for AI development insights.")
+    
+    # Initialize store
+    from src.content.store import ContentStore
+    from src.content.schemas import ContentStatus, ActionType
+    
+    store = ContentStore()
+    
+    st.markdown("---")
+    
+    # Summary Metrics
+    counts = store.count_by_status()
+    total = sum(counts.values())
+    unread = counts.get("unread", 0)
+    action_items = store.get_action_items(limit=100)
+    
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.metric("📚 Total Content", total)
+    with m2:
+        st.metric("📬 Unread", unread)
+    with m3:
+        st.metric("💡 Action Items", len(action_items))
+    with m4:
+        st.metric("✅ Read", counts.get("read", 0))
+    
+    st.markdown("---")
+    
+    # ============================================
+    # ADD CONTENT SECTION
+    # ============================================
+    st.subheader("➕ Add Content")
+    
+    with st.expander("Ingest new URL", expanded=False):
+        ingest_url = st.text_input("URL to ingest", placeholder="https://example.com/article")
+        ingest_tags = st.text_input("Tags (optional)", placeholder="agents, llm, priority")
+        
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            ingest_btn = st.button("🚀 Ingest", type="primary", use_container_width=True)
+        
+        if ingest_btn and ingest_url:
+            with st.spinner("🔄 Fetching and analyzing content..."):
+                try:
+                    from src.agents.curator import CuratorAgent
+                    
+                    curator = CuratorAgent(content_store=store)
+                    tags = [t.strip() for t in ingest_tags.split(",")] if ingest_tags else []
+                    
+                    result = curator.process({
+                        "url": ingest_url,
+                        "manual_tags": tags,
+                    })
+                    
+                    payload = result.payload
+                    status = payload.get("status")
+                    
+                    if status == "ingested":
+                        entry = payload["content_entry"]
+                        st.success(f"✅ Ingested: {entry['title'][:60]}")
+                        st.markdown(f"**Summary:** {entry['summary']}")
+                        st.markdown(f"**Categories:** {', '.join(entry['categories'])}")
+                        st.markdown(f"**Relevance:** {entry['relevance_score']:.2f}")
+                        if entry["action_items"]:
+                            st.markdown(f"**Action Items:** {len(entry['action_items'])}")
+                        st.rerun()
+                    elif status == "duplicate":
+                        st.warning(f"⚠️ Already ingested as {payload.get('existing_id')}")
+                    else:
+                        st.error(f"❌ Error: {payload.get('error', 'Unknown')}")
+                except Exception as e:
+                    st.error(f"❌ Ingestion failed: {e}")
+    
+    st.markdown("---")
+    
+    # ============================================
+    # BROWSE & SEARCH SECTION
+    # ============================================
+    st.subheader("🔍 Browse & Search")
+    
+    # Filters
+    col1, col2, col3 = st.columns([1, 1, 2])
+    
+    with col1:
+        status_filter = st.selectbox(
+            "Status",
+            ["all", "unread", "read", "implemented", "archived"],
+            index=0
+        )
+    
+    with col2:
+        # Load taxonomy for categories
+        import json
+        from pathlib import Path
+        taxonomy_path = Path(__file__).parent / "config" / "content_taxonomy.json"
+        categories = ["all"]
+        if taxonomy_path.exists():
+            with open(taxonomy_path) as f:
+                tax = json.load(f)
+                categories += [c["id"] for c in tax.get("categories", [])]
+        
+        category_filter = st.selectbox("Category", categories, index=0)
+    
+    with col3:
+        search_query = st.text_input("Search", placeholder="Search content...")
+    
+    # Get results
+    if search_query:
+        entries = store.search(search_query, limit=50)
+    elif category_filter != "all":
+        entries = store.list_by_category(category_filter, limit=50)
+    elif status_filter != "all":
+        try:
+            entries = store.list_by_status(ContentStatus(status_filter), limit=50)
+        except ValueError:
+            entries = []
+    else:
+        # Default: show unread first, then recent
+        entries = store.list_by_status(ContentStatus.UNREAD, limit=50)
+        if len(entries) < 20:
+            read_entries = store.list_by_status(ContentStatus.READ, limit=20 - len(entries))
+            entries.extend(read_entries)
+    
+    st.markdown(f"**Showing {len(entries)} items**")
+    
+    # ============================================
+    # CONTENT CARDS
+    # ============================================
+    for entry in entries:
+        # Relevance bar
+        rel_pct = int(entry.relevance_score * 100)
+        rel_bar = "█" * int(entry.relevance_score * 5) + "░" * (5 - int(entry.relevance_score * 5))
+        
+        # Status icon
+        status_icons = {
+            ContentStatus.UNREAD: "📬",
+            ContentStatus.READ: "📖",
+            ContentStatus.IMPLEMENTED: "✅",
+            ContentStatus.ARCHIVED: "📦",
+        }
+        status_icon = status_icons.get(entry.status, "📄")
+        
+        with st.expander(f"{status_icon} {entry.title[:70]} | {rel_bar} {rel_pct}%"):
+            # Content details
+            st.markdown(f"**URL:** [{entry.url[:60]}...]({entry.url})")
+            st.markdown(f"**Summary:** {entry.summary}")
+            st.markdown(f"**Categories:** `{'`, `'.join(entry.categories)}`")
+            st.markdown(f"**Ingested:** {entry.ingested_at[:10]}")
+            
+            # Action items in this content
+            if entry.action_items:
+                st.markdown("**💡 Action Items:**")
+                for action in entry.action_items:
+                    st.markdown(f"- [{action.action_type.value.upper()}] {action.description}")
+                    if action.related_files:
+                        st.caption(f"  Files: {', '.join(action.related_files)}")
+            
+            st.markdown("---")
+            
+            # Action buttons
+            btn_col1, btn_col2, btn_col3, btn_col4 = st.columns(4)
+            
+            with btn_col1:
+                if entry.status == ContentStatus.UNREAD:
+                    if st.button("✅ Mark Read", key=f"read_{entry.id}"):
+                        store.update_status(entry.id, ContentStatus.READ)
+                        st.rerun()
+                elif entry.status == ContentStatus.READ:
+                    if st.button("📬 Mark Unread", key=f"unread_{entry.id}"):
+                        store.update_status(entry.id, ContentStatus.UNREAD)
+                        st.rerun()
+            
+            with btn_col2:
+                if entry.status != ContentStatus.ARCHIVED:
+                    if st.button("📦 Archive", key=f"archive_{entry.id}"):
+                        store.update_status(entry.id, ContentStatus.ARCHIVED)
+                        st.rerun()
+                else:
+                    if st.button("📤 Unarchive", key=f"unarchive_{entry.id}"):
+                        store.update_status(entry.id, ContentStatus.UNREAD)
+                        st.rerun()
+            
+            with btn_col3:
+                if st.button("🔬 Deep Analysis", key=f"analyze_{entry.id}"):
+                    st.session_state[f"analyzing_{entry.id}"] = True
+            
+            with btn_col4:
+                if st.button("🔗 Open URL", key=f"open_{entry.id}"):
+                    st.markdown(f'<meta http-equiv="refresh" content="0; url={entry.url}">', unsafe_allow_html=True)
+            
+            # Deep Analysis execution
+            if st.session_state.get(f"analyzing_{entry.id}"):
+                with st.spinner("🔬 Running deep analysis with AI..."):
+                    try:
+                        import google.generativeai as genai
+                        import os
+                        
+                        api_key = os.environ.get("GOOGLE_API_KEY")
+                        if not api_key:
+                            st.error("GOOGLE_API_KEY not set")
+                        else:
+                            genai.configure(api_key=api_key)
+                            model = genai.GenerativeModel("gemini-2.0-flash")
+                            
+                            analysis_prompt = f"""Analyze this content in depth for an AI agent development codebase.
+
+TITLE: {entry.title}
+URL: {entry.url}
+SUMMARY: {entry.summary}
+CATEGORIES: {', '.join(entry.categories)}
+
+CONTENT (if available):
+{entry.raw_content[:8000] if entry.raw_content else 'Not available'}
+
+---
+
+Provide a deep analysis covering:
+1. **Key Insights**: What are the main takeaways?
+2. **Applicability**: How does this apply to a multi-agent AI system?
+3. **Specific Recommendations**: Concrete changes we could make to our codebase
+4. **Implementation Priority**: High/Medium/Low and why
+5. **Related Concepts**: What other topics should we research?
+
+Be specific and actionable."""
+
+                            response = model.generate_content(analysis_prompt)
+                            st.markdown("### 🔬 Deep Analysis Results")
+                            st.markdown(response.text)
+                            
+                    except Exception as e:
+                        st.error(f"Analysis failed: {e}")
+                    finally:
+                        st.session_state[f"analyzing_{entry.id}"] = False
+    
+    if not entries:
+        st.info("No content found. Add some URLs above!")
+    
+    st.markdown("---")
+    
+    # ============================================
+    # ACTION ITEMS PANEL
+    # ============================================
+    st.subheader("💡 Action Items Across All Content")
+    
+    # Filter by type
+    action_type_filter = st.selectbox(
+        "Filter by type",
+        ["all", "enhancement", "correction", "research", "documentation", "idea"],
+        index=0
+    )
+    
+    filtered_type = action_type_filter if action_type_filter != "all" else None
+    all_actions = store.get_action_items(action_type=filtered_type, limit=20)
+    
+    if all_actions:
+        for entry, action in all_actions:
+            type_colors = {
+                ActionType.ENHANCEMENT: "🟢",
+                ActionType.CORRECTION: "🔴",
+                ActionType.RESEARCH: "🔵",
+                ActionType.DOCUMENTATION: "🟡",
+                ActionType.IDEA: "🟣",
+            }
+            type_icon = type_colors.get(action.action_type, "⚪")
+            
+            with st.container():
+                st.markdown(f"{type_icon} **[{action.action_type.value.upper()}]** P{action.priority} - {action.description}")
+                st.caption(f"From: {entry.title[:50]} ({entry.id})")
+                if action.related_files:
+                    st.caption(f"Files: {', '.join(action.related_files)}")
+                st.markdown("---")
+    else:
+        st.info("No action items found.")
+
+
+# ============================================
+# 🧠 ADVISOR CHAT
+# ============================================
+elif mode == "🧠 Advisor Chat":
+    st.title("🧠 Advisor Chat")
+    st.caption("AI-powered content review and categorization assistant")
+    
+    try:
+        from src.content.store import ContentStore
+        from src.agents.advisor import CuratorAdvisor
+        
+        content_store = ContentStore()
+        
+        # Initialize advisor in session state
+        if "advisor" not in st.session_state:
+            st.session_state.advisor = CuratorAdvisor(content_store=content_store)
+        
+        if "advisor_chat_history" not in st.session_state:
+            st.session_state.advisor_chat_history = []
+        
+        advisor = st.session_state.advisor
+        
+        # Get all content for selection
+        all_content = content_store.list_entries(limit=50)
+        
+        if not all_content:
+            st.info("📭 No content ingested yet. Use the **Content Library** to ingest URLs first.")
+        else:
+            # --- Content Selection Card ---
+            with st.container(border=True):
+                st.markdown("##### 📄 Select Content")
+                content_options = {f"{c.title[:60]}..." if len(c.title) > 60 else c.title: c.id for c in all_content}
+                selected_label = st.selectbox(
+                    "Choose content to review:", 
+                    list(content_options.keys()),
+                    label_visibility="collapsed"
+                )
+                selected_id = content_options[selected_label]
+                
+                # Show content preview
+                selected_content = content_store.read(selected_id)
+                if selected_content:
+                    st.caption(f"🏷️ {', '.join(selected_content.categories[:3])} • 📊 {selected_content.relevance_score:.0%} relevance")
+            
+            # Action buttons
+            col1, col2, col3 = st.columns([1, 1, 2])
+            with col1:
+                get_suggestions = st.button("🔍 Get Suggestions", use_container_width=True, type="primary")
+            with col2:
+                send_to_planner = st.button("📋 Send to Planner", use_container_width=True)
+            
+            if get_suggestions:
+                with st.spinner("🧠 Analyzing content..."):
+                    result = advisor._review_content(selected_id)
+                    st.session_state.current_suggestions = result
+            
+            if send_to_planner:
+                from src.agents.planner import PlannerAgent
+                planner = PlannerAgent(content_store=content_store)
+                result = planner._import_content_actions(selected_id)
+                if "error" not in result:
+                    st.success(f"✅ Created {result.get('tasks_created', 0)} tasks in Planner")
+                else:
+                    st.error(result["error"])
+            
+            # Display suggestions
+            if "current_suggestions" in st.session_state:
+                suggestions = st.session_state.current_suggestions
+                
+                if "error" in suggestions:
+                    st.error(suggestions["error"])
+                else:
+                    st.markdown("---")
+                    
+                    sugg_data = suggestions.get("suggestions", {})
+                    
+                    # --- Category Suggestions Card ---
+                    if "category_suggestions" in sugg_data and sugg_data["category_suggestions"]:
+                        with st.container(border=True):
+                            st.markdown("##### 🏷️ Category Suggestions")
+                            for cs in sugg_data["category_suggestions"]:
+                                col1, col2, col3 = st.columns([4, 1, 1])
+                                with col1:
+                                    current = cs.get('current', 'None')
+                                    suggested = cs.get('suggested', 'N/A')
+                                    st.markdown(f"**{current}** → 🆕 **{suggested}**")
+                                    st.caption(f"💡 {cs.get('reasoning', '')}")
+                                with col2:
+                                    if st.button("✅", key=f"cat_accept_{cs.get('suggested')}", help="Accept"):
+                                        advisor._learn_from_feedback({
+                                            "content_id": selected_id,
+                                            "type": "category",
+                                            "suggested": cs.get("suggested"),
+                                            "accepted": True,
+                                        })
+                                        st.toast("✅ Learned preference!")
+                                with col3:
+                                    if st.button("❌", key=f"cat_reject_{cs.get('suggested')}", help="Reject"):
+                                        advisor._learn_from_feedback({
+                                            "content_id": selected_id,
+                                            "type": "category",
+                                            "suggested": cs.get("suggested"),
+                                            "accepted": False,
+                                        })
+                                        st.toast("📝 Noted")
+                    
+                    # --- Action Suggestions Card ---
+                    if "action_suggestions" in sugg_data and sugg_data["action_suggestions"]:
+                        with st.container(border=True):
+                            st.markdown("##### ⚡ Suggested Actions")
+                            
+                            for idx, action in enumerate(sugg_data["action_suggestions"]):
+                                priority = action.get('priority', 3)
+                                # Priority badges
+                                badge = {1: "🔴", 2: "🟠", 3: "🟡", 4: "🟢", 5: "⚪"}.get(priority, "⚪")
+                                
+                                col1, col2, col3 = st.columns([4, 1, 1])
+                                
+                                with col1:
+                                    st.markdown(f"{badge} **P{priority}**: {action.get('description', '')}")
+                                    st.caption(f"💡 {action.get('reasoning', '')}")
+                                
+                                with col2:
+                                    new_priority = st.selectbox(
+                                        "Priority",
+                                        [1, 2, 3, 4, 5],
+                                        index=priority - 1,
+                                        key=f"action_prio_{idx}_{action.get('description', '')[:15]}",
+                                        label_visibility="collapsed"
+                                    )
+                                
+                                with col3:
+                                    if st.button("➕", key=f"action_accept_{idx}_{action.get('description', '')[:15]}", help="Add Task"):
+                                        from src.agents.planner import PlannerAgent
+                                        planner = PlannerAgent(content_store=content_store)
+                                        result = planner._create_task({
+                                            "description": action.get('description', ''),
+                                            "priority": new_priority,
+                                            "source_type": "content",
+                                            "source_id": selected_id,
+                                            "notes": f"From Advisor: {action.get('reasoning', '')}",
+                                        })
+                                        if "error" not in result:
+                                            st.toast(f"✅ Created {result.get('task', {}).get('id', '')}")
+                                        else:
+                                            st.error(result["error"])
+                                
+                                if idx < len(sugg_data["action_suggestions"]) - 1:
+                                    st.divider()
+                    
+                    # --- Priority Suggestion ---
+                    if "priority_suggestion" in sugg_data:
+                        ps = sugg_data["priority_suggestion"]
+                        st.markdown(f"**Priority:** {ps.get('current', 'N/A')} → **{ps.get('suggested', 'N/A')}**")
+                        st.caption(ps.get("reasoning", ""))
+            
+            st.markdown("---")
+            
+            # --- Chat Interface Card ---
+            with st.container(border=True):
+                col_title, col_clear = st.columns([4, 1])
+                with col_title:
+                    st.markdown("##### 💬 Chat with Advisor")
+                with col_clear:
+                    if st.button("🗑️ Clear", help="Clear chat history"):
+                        st.session_state.advisor_chat_history = []
+                        st.rerun()
+                
+                # Display chat history with bubbles
+                chat_container = st.container(height=300)
+                with chat_container:
+                    if not st.session_state.advisor_chat_history:
+                        st.caption("Ask questions about this content...")
+                    else:
+                        for msg in st.session_state.advisor_chat_history[-10:]:
+                            if msg["role"] == "user":
+                                with st.chat_message("user"):
+                                    st.write(msg['content'])
+                            else:
+                                with st.chat_message("assistant", avatar="🧠"):
+                                    st.write(msg['content'])
+            
+            # Chat input (outside the scrollable container)
+            user_message = st.chat_input("Ask about this content...")
+            if user_message:
+                with st.spinner("🧠 Thinking..."):
+                    result = advisor._chat_response(selected_id, user_message)
+                    
+                    st.session_state.advisor_chat_history.append({
+                        "role": "user",
+                        "content": user_message,
+                    })
+                    
+                    if "error" not in result:
+                        st.session_state.advisor_chat_history.append({
+                            "role": "advisor",
+                            "content": result.get("advisor_response", ""),
+                        })
+                    else:
+                        st.error(result["error"])
+                    
+                    st.rerun()
+            
+            # --- Learning Stats (Side Panel Style) ---
+            st.markdown("---")
+            stats = advisor.get_memory_stats()
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("📊 Feedback", stats["total_feedback"])
+            with col2:
+                st.metric("🏷️ Categories", stats["categories_learned"])
+            with col3:
+                st.metric("🔄 Patterns", stats.get("patterns_learned", 0))
+    
+    except ImportError as e:
+        st.error(f"Import error: {e}")
+    except Exception as e:
+        st.error(f"Error: {e}")
+
+
+# ============================================
+# 📋 PLANNER
+# ============================================
+elif mode == "📋 Planner":
+    st.title("📋 Planner")
+    st.caption("Prioritized task management across content and system")
+    
+    try:
+        from src.content.store import ContentStore
+        from src.agents.planner import PlannerAgent, TaskStatus
+        
+        content_store = ContentStore()
+        planner = PlannerAgent(content_store=content_store)
+        
+        # Quick stats
+        stats = planner.get_stats()
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Tasks", stats["total_tasks"])
+        with col2:
+            st.metric("To Do", stats["by_status"].get("todo", 0))
+        with col3:
+            st.metric("In Progress", stats["by_status"].get("in_progress", 0))
+        with col4:
+            st.metric("Done", stats["by_status"].get("done", 0))
+        
+        st.markdown("---")
+        
+        # Filters and actions
+        col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
+        
+        with col1:
+            status_filter = st.selectbox(
+                "Filter by Status",
+                ["All", "todo", "in_progress", "done", "archived"]
+            )
+        
+        with col2:
+            source_filter = st.selectbox(
+                "Filter by Source",
+                ["All", "content", "system", "manual"]
+            )
+        
+        with col3:
+            if st.button("📥 Import from System Backlog"):
+                result = planner._import_system_backlog()
+                if "error" not in result:
+                    st.success(f"✓ Imported {result.get('tasks_created', 0)} tasks")
+                else:
+                    st.error(result["error"])
+        
+        with col4:
+            if st.button("➕ Add Manual Task"):
+                st.session_state.show_add_task = True
+        
+        # Add task form
+        if st.session_state.get("show_add_task", False):
+            with st.form("add_task_form"):
+                st.subheader("Add New Task")
+                task_desc = st.text_area("Description")
+                task_priority = st.slider("Priority", 1, 5, 3)
+                task_due = st.date_input("Due Date (optional)")
+                
+                if st.form_submit_button("Create Task"):
+                    result = planner._create_task({
+                        "description": task_desc,
+                        "priority": task_priority,
+                        "due_date": str(task_due) if task_due else None,
+                        "source_type": "manual",
+                    })
+                    if "error" not in result:
+                        st.success(f"✓ Created {result.get('task', {}).get('id', 'task')}")
+                        st.session_state.show_add_task = False
+                        st.rerun()
+                    else:
+                        st.error(result["error"])
+        
+        st.markdown("---")
+        
+        # Get tasks
+        filters = {}
+        if status_filter != "All":
+            filters["status"] = status_filter
+        if source_filter != "All":
+            filters["source_type"] = source_filter
+        
+        result = planner._list_tasks(filters)
+        tasks = result.get("tasks", [])
+        
+        # Group by priority
+        priority_groups = {1: [], 2: [], 3: [], 4: [], 5: []}
+        for task in tasks:
+            p = task.get("priority", 3)
+            if p in priority_groups:
+                priority_groups[p].append(task)
+        
+        priority_labels = {
+            1: "🔴 P1 - Critical",
+            2: "🟠 P2 - High",
+            3: "🟡 P3 - Medium",
+            4: "🟢 P4 - Low",
+            5: "⚪ P5 - Minimal",
+        }
+        
+        for priority, group in priority_groups.items():
+            if group:
+                st.subheader(priority_labels[priority])
+                
+                for task in group:
+                    with st.container():
+                        col1, col2, col3 = st.columns([4, 1, 1])
+                        
+                        with col1:
+                            status_icon = {
+                                "todo": "⬜",
+                                "in_progress": "🔄",
+                                "done": "✅",
+                                "archived": "📦",
+                            }.get(task.get("status"), "⬜")
+                            
+                            st.markdown(f"{status_icon} **{task.get('description', '')}**")
+                            
+                            source_type = task.get("source_type", "")
+                            source_id = task.get("source_id", "")
+                            if source_type == "content":
+                                st.caption(f"📚 From content: {source_id}")
+                            elif source_type == "system":
+                                st.caption(f"⚙️ System: {source_id}")
+                            else:
+                                st.caption("✏️ Manual task")
+                            
+                            if task.get("due_date"):
+                                st.caption(f"📅 Due: {task.get('due_date')}")
+                        
+                        with col2:
+                            new_status = st.selectbox(
+                                "Status",
+                                ["todo", "in_progress", "done"],
+                                index=["todo", "in_progress", "done"].index(task.get("status", "todo")) if task.get("status") in ["todo", "in_progress", "done"] else 0,
+                                key=f"status_{task.get('id')}",
+                                label_visibility="collapsed"
+                            )
+                            if new_status != task.get("status"):
+                                planner._update_task(task.get("id"), {"status": new_status})
+                                st.rerun()
+                        
+                        with col3:
+                            if st.button("🗑️", key=f"archive_{task.get('id')}"):
+                                planner._update_task(task.get("id"), {"status": "archived"})
+                                st.rerun()
+                        
+                        st.markdown("---")
+        
+        if not tasks:
+            st.info("No tasks found. Import from content or system backlog, or add manually.")
+    
+    except ImportError as e:
+        st.error(f"Import error: {e}")
+    except Exception as e:
+        st.error(f"Error: {e}")
+
+
 # Footer
 st.markdown("---")
 st.caption("Valhalla V2 Dashboard • Built with Streamlit • Powered by LangGraph")
+

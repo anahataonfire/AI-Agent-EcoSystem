@@ -33,8 +33,7 @@ Return ONLY valid JSON matching this schema:
     "source_ids": ["ev_123", "ev_456"],
     "report_body_markdown": "# Full Report\n\nDetails..."
   },
-  "success_criteria": ["..."],
-  "plan_fingerprint": "<sha256>"
+  "success_criteria": ["..."]
 }
 ```
 
@@ -44,7 +43,9 @@ Return ONLY valid JSON matching this schema:
 - `https://rss.nytimes.com/*`
 - `https://feeds.bbci.co.uk/*`
 - `https://feeds.reuters.com/*`
-- `https://techcrunch.com/feed/`
+- `https://techcrunch.com/feed/` (MUST start with https://)
+
+**Constraint**: All URLs must strictly start with `https://`. Do NOT omit the protocol.
 
 **Dynamic Search** (topic-specific queries):
 When the user asks for a specific topic (e.g., "Epstein files", "Tesla earnings", "Bitcoin crash"):
@@ -69,4 +70,14 @@ When the user asks for a specific topic (e.g., "Epstein files", "Tesla earnings"
 - Prefer recent articles (24h window)
 - Keep summaries under 500 words
 - **IMPORTANT**: For specific topics, ALWAYS use `google_news` with `search_query` instead of generic homepage feeds
+
+## Citation Rules (CRITICAL)
+
+When writing `report_body_markdown` in `CompleteTask`:
+1. **EVERY** factual claim (dates, names, events) MUST be followed by a citation like `[EVID:ev_123]`.
+2. Do NOT write a paragraph of facts without at least one citation.
+3. Use the IDs from the "Evidence Content Preview" provided in the context.
+4. **Example**: "Apple announced a new iPhone today [EVID:ev_abc123]. The device costs $999 [EVID:ev_def456]."
+
+**FAILING TO CITE WILL CAUSE MISSION FAILURE.**
 

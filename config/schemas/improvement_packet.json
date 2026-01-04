@@ -1,0 +1,152 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "$id": "https://dtl.local/schemas/improvement_packet.json",
+    "title": "ImprovementPacket",
+    "description": "MetaAnalyst recommendations for system improvement",
+    "type": "object",
+    "required": [
+        "packet_id",
+        "packet_content_hash",
+        "run_ids",
+        "created_at",
+        "summary",
+        "findings",
+        "recommendations",
+        "operator_actions_required",
+        "safe_mode",
+        "version"
+    ],
+    "properties": {
+        "packet_id": {
+            "type": "string",
+            "pattern": "^PACKET-[A-Z0-9]{8}$",
+            "description": "Deterministic ID: base32(sha256(packet_content_hash))[:8]"
+        },
+        "packet_content_hash": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "description": "Hash of the packet content (excluding this hash field)"
+        },
+        "run_ids": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "pattern": "^(RUN-[0-9]{8}_[0-9]{6}|TEST-[A-Z0-9]+)$"
+            },
+            "minItems": 1
+        },
+        "created_at": {
+            "type": "string",
+            "format": "date-time"
+        },
+        "summary": {
+            "type": "string"
+        },
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "title",
+                    "severity",
+                    "evidence_refs",
+                    "details"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "title": {
+                        "type": "string"
+                    },
+                    "severity": {
+                        "enum": [
+                            "low",
+                            "med",
+                            "high"
+                        ]
+                    },
+                    "evidence_refs": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "details": {
+                        "type": "string"
+                    }
+                },
+                "additionalProperties": false
+            }
+        },
+        "recommendations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "type",
+                    "title",
+                    "rationale",
+                    "files_touched",
+                    "patch_hint",
+                    "risk_level"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "type": {
+                        "enum": [
+                            "tests",
+                            "config",
+                            "schema",
+                            "prompt",
+                            "risk_gate",
+                            "docs"
+                        ]
+                    },
+                    "title": {
+                        "type": "string"
+                    },
+                    "rationale": {
+                        "type": "string"
+                    },
+                    "files_touched": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "patch_hint": {
+                        "type": "string"
+                    },
+                    "risk_level": {
+                        "enum": [
+                            "low",
+                            "med",
+                            "high"
+                        ]
+                    }
+                },
+                "additionalProperties": false
+            }
+        },
+        "operator_actions_required": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            }
+        },
+        "safe_mode": {
+            "type": "boolean",
+            "description": "True if DISABLE_LEARNING or DISABLE_WRITES was active during generation"
+        },
+        "version": {
+            "type": "string",
+            "const": "1.0.0"
+        }
+    },
+    "additionalProperties": false
+}

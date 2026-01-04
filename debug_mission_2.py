@@ -27,5 +27,5 @@ def debug_pipeline(query: str):
                 print(f"Message ({type(last_msg).__name__}): {content_preview}...")
 
 if __name__ == "__main__":
-    query = "Fetch the top 3 tech stories from TechCrunch AND the top 3 from BBC. Compare them. Identify if any company is mentioned in both. Provide one structured report with Source IDs for both feeds."
+    query = "Find recent news about Apple using Google News."
     debug_pipeline(query)

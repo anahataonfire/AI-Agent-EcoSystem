@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.dtl.content-watcher</string>
+    
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0/.venv/bin/python</string>
+        <string>-m</string>
+        <string>src.cli</string>
+        <string>ingest</string>
+        <string>--from-inbox</string>
+        <string>/Users/adamc/Library/Mobile Documents/com~apple~CloudDocs/DTL/inbox.txt</string>
+    </array>
+    
+    <key>WorkingDirectory</key>
+    <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0</string>
+    
+    <!-- Watch for changes to iCloud inbox file -->
+    <key>WatchPaths</key>
+    <array>
+        <string>/Users/adamc/Library/Mobile Documents/com~apple~CloudDocs/DTL/inbox.txt</string>
+    </array>
+    
+    <!-- Also run on a schedule as backup (every 6 hours) -->
+    <key>StartInterval</key>
+    <integer>21600</integer>
+    
+    <key>StandardOutPath</key>
+    <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0/logs/content_watcher.log</string>
+    
+    <key>StandardErrorPath</key>
+    <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0/logs/content_watcher_error.log</string>
+    
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0</string>
+        <key>TZ</key>
+        <string>Pacific/Honolulu</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/Users/adamc/.local/bin</string>
+    </dict>
+</dict>
+</plist>

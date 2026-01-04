@@ -1,0 +1,147 @@
+{
+    "version": "1.0",
+    "categories": [
+        {
+            "id": "agents",
+            "name": "Multi-Agent Systems",
+            "keywords": [
+                "agent",
+                "multi-agent",
+                "orchestrator",
+                "llm agent",
+                "agentic"
+            ]
+        },
+        {
+            "id": "llm",
+            "name": "Large Language Models",
+            "keywords": [
+                "llm",
+                "gpt",
+                "claude",
+                "gemini",
+                "language model",
+                "transformer",
+                "prompting"
+            ]
+        },
+        {
+            "id": "python",
+            "name": "Python Development",
+            "keywords": [
+                "python",
+                "pip",
+                "venv",
+                "async",
+                "dataclass",
+                "typing"
+            ]
+        },
+        {
+            "id": "architecture",
+            "name": "System Architecture",
+            "keywords": [
+                "architecture",
+                "design pattern",
+                "microservice",
+                "event-driven",
+                "state machine"
+            ]
+        },
+        {
+            "id": "testing",
+            "name": "Testing & Verification",
+            "keywords": [
+                "test",
+                "pytest",
+                "unit test",
+                "integration",
+                "verification",
+                "assertion"
+            ]
+        },
+        {
+            "id": "security",
+            "name": "Security & Safety",
+            "keywords": [
+                "security",
+                "guardrail",
+                "safety",
+                "injection",
+                "validation",
+                "red team"
+            ]
+        },
+        {
+            "id": "performance",
+            "name": "Performance & Optimization",
+            "keywords": [
+                "performance",
+                "optimization",
+                "cache",
+                "latency",
+                "throughput",
+                "efficiency"
+            ]
+        },
+        {
+            "id": "tooling",
+            "name": "Developer Tools",
+            "keywords": [
+                "tool",
+                "cli",
+                "workflow",
+                "automation",
+                "devops",
+                "ci/cd"
+            ]
+        },
+        {
+            "id": "research",
+            "name": "Research & Papers",
+            "keywords": [
+                "paper",
+                "arxiv",
+                "research",
+                "study",
+                "benchmark",
+                "evaluation"
+            ]
+        },
+        {
+            "id": "langgraph",
+            "name": "LangGraph & LangChain",
+            "keywords": [
+                "langgraph",
+                "langchain",
+                "langsmith",
+                "lcel",
+                "chain"
+            ]
+        },
+        {
+            "id": "rag",
+            "name": "RAG & Retrieval",
+            "keywords": [
+                "rag",
+                "retrieval",
+                "embedding",
+                "vector",
+                "semantic search",
+                "chunking"
+            ]
+        },
+        {
+            "id": "trading",
+            "name": "Trading & Markets",
+            "keywords": [
+                "trading",
+                "market",
+                "polymarket",
+                "prediction",
+                "bet",
+                "probability"
+            ]
+        }
+    ]
+}

@@ -1,0 +1,158 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "$id": "https://dtl.local/schemas/run_score.json",
+    "title": "RunScore",
+    "description": "Deterministic score for a single DTL run (Hybrid C: Outcome + Process + Safety)",
+    "type": "object",
+    "required": [
+        "run_score_id",
+        "run_id",
+        "run_ts",
+        "scores",
+        "flags",
+        "evidence_metrics",
+        "realitycheck_metrics",
+        "computed_at",
+        "version"
+    ],
+    "properties": {
+        "run_score_id": {
+            "type": "string",
+            "pattern": "^RUNSCORE-[A-Z0-9]{8}$",
+            "description": "Deterministic ID: base32(sha256(run_id + run_ts))[:8]"
+        },
+        "run_id": {
+            "type": "string",
+            "pattern": "^(RUN-[0-9]{8}_[0-9]{6}|TEST-[A-Z0-9]+)$",
+            "description": "The run identifier being scored"
+        },
+        "run_ts": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp of the run"
+        },
+        "bundle_hash": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "description": "Hash of the committed bundle (optional if run failed before commit)"
+        },
+        "scores": {
+            "type": "object",
+            "required": [
+                "outcome_proxy_score",
+                "process_quality_score",
+                "safety_posture_score",
+                "total_score"
+            ],
+            "properties": {
+                "outcome_proxy_score": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100
+                },
+                "process_quality_score": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100
+                },
+                "safety_posture_score": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100
+                },
+                "total_score": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100
+                }
+            },
+            "additionalProperties": false
+        },
+        "flags": {
+            "type": "object",
+            "required": [
+                "degraded_triggered",
+                "firewall_rejections",
+                "commit_gate_rejections",
+                "evidence_stale_count"
+            ],
+            "properties": {
+                "degraded_triggered": {
+                    "type": "boolean"
+                },
+                "firewall_rejections": {
+                    "type": "integer",
+                    "minimum": 0
+                },
+                "commit_gate_rejections": {
+                    "type": "integer",
+                    "minimum": 0
+                },
+                "evidence_stale_count": {
+                    "type": "integer",
+                    "minimum": 0
+                }
+            },
+            "additionalProperties": false
+        },
+        "evidence_metrics": {
+            "type": "object",
+            "required": [
+                "evidence_count",
+                "evidence_fresh_count",
+                "evidence_expired_count",
+                "avg_trust_tier"
+            ],
+            "properties": {
+                "evidence_count": {
+                    "type": "integer",
+                    "minimum": 0
+                },
+                "evidence_fresh_count": {
+                    "type": "integer",
+                    "minimum": 0
+                },
+                "evidence_expired_count": {
+                    "type": "integer",
+                    "minimum": 0
+                },
+                "avg_trust_tier": {
+                    "type": "number",
+                    "minimum": 0
+                }
+            },
+            "additionalProperties": false
+        },
+        "realitycheck_metrics": {
+            "type": "object",
+            "required": [
+                "available",
+                "alignment_score",
+                "notes"
+            ],
+            "properties": {
+                "available": {
+                    "type": "boolean"
+                },
+                "alignment_score": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100
+                },
+                "notes": {
+                    "type": "string"
+                }
+            },
+            "additionalProperties": false
+        },
+        "computed_at": {
+            "type": "string",
+            "format": "date-time"
+        },
+        "version": {
+            "type": "string",
+            "const": "1.0.0"
+        }
+    },
+    "additionalProperties": false
+}
