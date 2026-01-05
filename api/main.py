@@ -231,22 +231,24 @@ async def content_browse(limit: int = 50, x_api_key: str = Header(None)):
         from src.content.store import ContentStore
         
         store = ContentStore()
-        items = store.list_recent(limit=limit)
+        entries = store.list_entries(limit=limit)
         
         return [
             LibraryItem(
-                id=str(item.get("id", "")),
-                title=item.get("title", "Untitled"),
-                summary=item.get("summary", "")[:500] if item.get("summary") else "",
-                source_url=item.get("url"),
-                categories=item.get("categories", []) if isinstance(item.get("categories"), list) else [],
-                action_items=item.get("action_items", []) if isinstance(item.get("action_items"), list) else [],
-                created_at=str(item.get("created_at", "")),
+                id=entry.id,
+                title=entry.title or "Untitled",
+                summary=entry.summary[:500] if entry.summary else "",
+                source_url=entry.url,
+                categories=entry.categories if isinstance(entry.categories, list) else [],
+                action_items=[a.action for a in entry.action_items] if entry.action_items else [],
+                created_at=entry.ingested_at or "",
             )
-            for item in items
+            for entry in entries
         ]
     except Exception as e:
         print(f"Content browse error: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 
