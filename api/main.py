@@ -11,12 +11,16 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 # Add project root to path for imports
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Load environment variables from .env file
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 sys.path.insert(0, PROJECT_ROOT)
 
 
@@ -50,6 +54,7 @@ class LibraryItem(BaseModel):
     categories: List[str] = []
     action_items: List[str] = []
     created_at: str
+    planner_status: Optional[str] = None  # 'queued' | 'in_progress' | 'done' | null
 
 
 class ResearchRequest(BaseModel):
@@ -224,31 +229,52 @@ async def library_search(q: str, x_api_key: str = Header(None)):
 
 
 @app.get("/content/browse", response_model=List[LibraryItem])
-async def content_browse(limit: int = 50, x_api_key: str = Header(None)):
-    """Browse curated content store (user's saved links)."""
+async def content_browse(
+    limit: int = 50,
+    planner_status: Optional[str] = None,
+    x_api_key: str = Header(None)
+):
+    """Browse curated content store (user's saved links).
+    
+    Optional filter: planner_status (queued | in_progress | done)
+    """
     verify_token(x_api_key)
     
     try:
         from pathlib import Path
-        from src.content.store import ContentStore
+        import sqlite3
+        import json
         
-        # Use absolute path to ensure we find the right database
         db_path = Path(PROJECT_ROOT) / "data" / "content" / "content.db"
-        store = ContentStore(db_path=db_path)
-        entries = store.list_entries(limit=limit)
         
-        return [
-            LibraryItem(
-                id=entry.id,
-                title=entry.title or "Untitled",
-                summary=entry.summary[:500] if entry.summary else "",
-                source_url=entry.url,
-                categories=entry.categories if isinstance(entry.categories, list) else [],
-                action_items=[a.action for a in entry.action_items] if entry.action_items else [],
-                created_at=entry.ingested_at or "",
-            )
-            for entry in entries
-        ]
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            
+            # Build query with optional filter
+            if planner_status:
+                rows = conn.execute(
+                    "SELECT * FROM content WHERE planner_status = ? ORDER BY ingested_at DESC LIMIT ?",
+                    (planner_status, limit)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM content ORDER BY ingested_at DESC LIMIT ?",
+                    (limit,)
+                ).fetchall()
+            
+            return [
+                LibraryItem(
+                    id=row["id"],
+                    title=row["title"] or "Untitled",
+                    summary=(row["summary"] or "")[:500],
+                    source_url=row["url"],
+                    categories=json.loads(row["categories"]) if row["categories"] else [],
+                    action_items=json.loads(row["action_items"]) if row["action_items"] else [],
+                    created_at=row["ingested_at"] or "",
+                    planner_status=row["planner_status"],
+                )
+                for row in rows
+            ]
     except Exception as e:
         print(f"Content browse error: {e}")
         import traceback
@@ -374,6 +400,45 @@ Pick categories that best match the content topic. Be specific and accurate."""
         return {"success": False, "error": "Failed to parse AI response", "suggested_categories": ["Reference"]}
     except Exception as e:
         print(f"Auto-categorize error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/content/{content_id}/planner-status")
+async def content_update_planner_status(
+    content_id: str,
+    status: Optional[str] = None,
+    x_api_key: str = Header(None)
+):
+    """Update planner status for a content item.
+    
+    status: 'queued' | 'in_progress' | 'done' | null (to unqueue)
+    """
+    verify_token(x_api_key)
+    
+    try:
+        from pathlib import Path
+        import sqlite3
+        
+        # Validate status
+        valid_statuses = [None, "queued", "in_progress", "done"]
+        if status not in valid_statuses:
+            raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
+        
+        db_path = Path(PROJECT_ROOT) / "data" / "content" / "content.db"
+        
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.execute(
+                "UPDATE content SET planner_status = ? WHERE id = ?",
+                (status, content_id)
+            )
+            if cursor.rowcount > 0:
+                return {"success": True, "content_id": content_id, "planner_status": status}
+            else:
+                raise HTTPException(status_code=404, detail="Content not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Planner status update error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

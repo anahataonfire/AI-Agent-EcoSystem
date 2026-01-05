@@ -24,6 +24,7 @@ interface ContentItem {
     categories: string[];
     action_items: string[];
     created_at: string;
+    planner_status?: string | null;  // 'queued' | 'in_progress' | 'done' | null
 }
 
 interface EvidenceItem {
@@ -359,13 +360,23 @@ function TriageCard({
                     )}
 
                     {/* AI Suggestion Banner */}
-                    {suggestedCategories && (
+                    {suggestedCategories && suggestedCategories.length > 0 && (
                         <div className="mt-2 flex items-center gap-2 bg-gradient-to-r from-cyan-500/10 to-purple-500/10 border border-cyan-500/30 rounded-lg p-2">
                             <span className="text-xs text-cyan-300">✨ AI suggests:</span>
-                            <div className="flex gap-1 flex-1">
+                            <div className="flex gap-1 flex-1 flex-wrap">
                                 {suggestedCategories.map((cat) => (
-                                    <span key={cat} className="text-xs bg-cyan-500/30 text-cyan-200 px-2 py-0.5 rounded-full">
+                                    <span
+                                        key={cat}
+                                        className="text-xs bg-cyan-500/30 text-cyan-200 px-2 py-0.5 rounded-full flex items-center gap-1"
+                                    >
                                         {cat}
+                                        <button
+                                            onClick={() => setSuggestedCategories(prev => prev?.filter(c => c !== cat) || null)}
+                                            className="text-cyan-400 hover:text-red-400 ml-0.5"
+                                            title="Remove this category"
+                                        >
+                                            ×
+                                        </button>
                                     </span>
                                 ))}
                             </div>
@@ -505,11 +516,39 @@ function OrganizedCard({
 }) {
     const [showEdit, setShowEdit] = useState(false);
     const [selectedCategories, setSelectedCategories] = useState<string[]>(item.categories);
+    const [autoSuggesting, setAutoSuggesting] = useState(false);
+    const [suggestedCategories, setSuggestedCategories] = useState<string[] | null>(null);
 
     const cleanSummary = item.summary
         .replace(/Fallback analysis:.*$/gm, "")
         .replace(/400 INVALID_ARGUMENT.*$/gm, "")
         .trim();
+
+    const handleAutoCategorize = async () => {
+        setAutoSuggesting(true);
+        setSuggestedCategories(null);
+        try {
+            const res = await fetch(`http://localhost:8000/content/${item.id}/auto-categorize`, {
+                method: "POST",
+                headers: { "X-API-Key": "dev-token-change-me" },
+            });
+            const data = await res.json();
+            if (data.success && data.suggested_categories) {
+                setSuggestedCategories(data.suggested_categories);
+            }
+        } catch (e) {
+            console.error("Auto-categorize error:", e);
+        } finally {
+            setAutoSuggesting(false);
+        }
+    };
+
+    const handleAcceptSuggestion = () => {
+        if (suggestedCategories) {
+            onCategorize(suggestedCategories);
+            setSuggestedCategories(null);
+        }
+    };
 
     return (
         <Card className="bg-gradient-to-br from-zinc-900/90 to-purple-900/10 border-purple-500/20 hover:border-purple-400/40 rounded-xl transition-all group">
@@ -545,8 +584,81 @@ function OrganizedCard({
                     </a>
                 )}
 
+                {/* AI Suggestion Banner */}
+                {suggestedCategories && suggestedCategories.length > 0 && (
+                    <div className="flex items-center gap-2 bg-gradient-to-r from-cyan-500/10 to-purple-500/10 border border-cyan-500/30 rounded-lg p-2">
+                        <span className="text-xs text-cyan-300">✨</span>
+                        <div className="flex gap-1 flex-1 flex-wrap">
+                            {suggestedCategories.map((cat) => (
+                                <span
+                                    key={cat}
+                                    className="text-xs bg-cyan-500/30 text-cyan-200 px-2 py-0.5 rounded-full flex items-center gap-1 group/tag"
+                                >
+                                    {cat}
+                                    <button
+                                        onClick={() => setSuggestedCategories(prev => prev?.filter(c => c !== cat) || null)}
+                                        className="text-cyan-400 hover:text-red-400 ml-0.5"
+                                        title="Remove this category"
+                                    >
+                                        ×
+                                    </button>
+                                </span>
+                            ))}
+                        </div>
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={handleAcceptSuggestion}
+                            className="h-5 px-2 text-[10px] text-green-400 hover:text-green-300"
+                        >
+                            ✓
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setSuggestedCategories(null)}
+                            className="h-5 px-1 text-[10px] text-zinc-500"
+                        >
+                            ✕
+                        </Button>
+                    </div>
+                )}
+
                 {/* Actions */}
                 <div className="flex gap-1 pt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={async () => {
+                            try {
+                                const res = await fetch(`http://localhost:8000/content/${item.id}/planner-status?status=queued`, {
+                                    method: "PATCH",
+                                    headers: { "X-API-Key": "dev-token-change-me" },
+                                });
+                                if (res.ok) {
+                                    // Show brief feedback
+                                    alert("Queued for planner!");
+                                }
+                            } catch (e) {
+                                console.error("Queue error:", e);
+                            }
+                        }}
+                        disabled={item.planner_status === "queued"}
+                        className={`h-6 text-[10px] ${item.planner_status === "queued" ? "text-green-400" : "text-violet-400 hover:text-violet-300"}`}
+                        title={item.planner_status === "queued" ? "Already queued" : "Queue for planner"}
+                    >
+                        {item.planner_status === "queued" ? "✓ Queued" : "📋 Queue"}
+                    </Button>
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={handleAutoCategorize}
+                        disabled={autoSuggesting}
+                        className="h-6 text-[10px] text-cyan-400 hover:text-cyan-300"
+                        title="AI auto-categorize"
+                    >
+                        {autoSuggesting ? "⏳" : "✨ Auto"}
+                    </Button>
                     <Dialog open={showEdit} onOpenChange={setShowEdit}>
                         <DialogTrigger asChild>
                             <Button variant="ghost" size="sm" className="h-6 text-[10px] text-zinc-500">

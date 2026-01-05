@@ -302,6 +302,41 @@ export default function PlannerPage() {
                 </div>
             </div>
 
+            {/* Library Queue Section */}
+            <LibraryQueueSection onAddToBoard={async (item) => {
+                // Create a task from the library item
+                try {
+                    const res = await fetch(
+                        `http://localhost:8000/planner/task?title=${encodeURIComponent(item.title)}&priority=2`,
+                        {
+                            method: "POST",
+                            headers: { "X-API-Key": "dev-token-change-me" },
+                        }
+                    );
+                    if (res.ok) {
+                        // Update library item status
+                        await fetch(`http://localhost:8000/content/${item.id}/planner-status?status=in_progress`, {
+                            method: "PATCH",
+                            headers: { "X-API-Key": "dev-token-change-me" },
+                        });
+                        fetchTasks();
+                    }
+                } catch {
+                    // Add locally for demo
+                    setTasks([
+                        ...tasks,
+                        {
+                            id: `task_${Date.now()}`,
+                            title: item.title,
+                            priority: 2,
+                            status: "todo",
+                            category: item.categories?.[0],
+                            created_at: new Date().toISOString(),
+                        },
+                    ]);
+                }
+            }} />
+
             {/* Kanban Board */}
             <DndContext
                 sensors={sensors}
@@ -359,8 +394,8 @@ function DroppableColumn({
                 <div
                     ref={setNodeRef}
                     className={`min-h-[200px] rounded-2xl p-3 space-y-3 transition-all ${isOver
-                            ? "bg-purple-500/10 border-2 border-purple-500/50"
-                            : "bg-zinc-900/30 border border-zinc-800 border-dashed"
+                        ? "bg-purple-500/10 border-2 border-purple-500/50"
+                        : "bg-zinc-900/30 border border-zinc-800 border-dashed"
                         }`}
                 >
                     {tasks.length === 0 ? (
@@ -405,8 +440,8 @@ function TaskCard({ task, isDragging = false }: { task: Task; isDragging?: boole
     return (
         <Card
             className={`bg-zinc-900/80 backdrop-blur-sm border-zinc-800 rounded-xl cursor-grab active:cursor-grabbing transition-all ${isDragging
-                    ? "shadow-xl shadow-purple-500/20 scale-105 rotate-1 border-purple-500/50"
-                    : "hover:border-zinc-600"
+                ? "shadow-xl shadow-purple-500/20 scale-105 rotate-1 border-purple-500/50"
+                : "hover:border-zinc-600"
                 }`}
         >
             <CardContent className="p-4">
@@ -422,5 +457,101 @@ function TaskCard({ task, isDragging = false }: { task: Task; isDragging?: boole
                 </div>
             </CardContent>
         </Card>
+    );
+}
+
+interface LibraryItem {
+    id: string;
+    title: string;
+    summary: string;
+    categories: string[];
+    planner_status: string | null;
+}
+
+function LibraryQueueSection({ onAddToBoard }: { onAddToBoard: (item: LibraryItem) => void }) {
+    const [items, setItems] = useState<LibraryItem[]>([]);
+    const [collapsed, setCollapsed] = useState(false);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        const fetchQueuedItems = async () => {
+            try {
+                const res = await fetch("http://localhost:8000/content/browse?planner_status=queued", {
+                    headers: { "X-API-Key": "dev-token-change-me" },
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    setItems(data);
+                }
+            } catch {
+                // Silently fail
+            } finally {
+                setLoading(false);
+            }
+        };
+        fetchQueuedItems();
+    }, []);
+
+    const handleAddToBoard = (item: LibraryItem) => {
+        onAddToBoard(item);
+        // Remove from local list
+        setItems(prev => prev.filter(i => i.id !== item.id));
+    };
+
+    if (loading) return null;
+    if (items.length === 0) return null;
+
+    return (
+        <div className="bg-zinc-900/60 border border-violet-500/20 rounded-xl overflow-hidden">
+            <button
+                onClick={() => setCollapsed(!collapsed)}
+                className="w-full flex items-center justify-between px-4 py-3 hover:bg-zinc-800/50 transition-colors"
+            >
+                <div className="flex items-center gap-2">
+                    <span className="text-lg">📚</span>
+                    <span className="font-medium text-violet-300">From Library</span>
+                    <span className="text-xs bg-violet-500/20 text-violet-300 px-2 py-0.5 rounded-full">
+                        {items.length} queued
+                    </span>
+                </div>
+                <span className="text-zinc-500">{collapsed ? "▶" : "▼"}</span>
+            </button>
+
+            {!collapsed && (
+                <div className="px-4 pb-4 space-y-2">
+                    {items.map(item => (
+                        <div
+                            key={item.id}
+                            className="flex items-center gap-3 bg-zinc-800/50 rounded-lg p-3 hover:bg-zinc-800 transition-colors"
+                        >
+                            {/* Category badges */}
+                            <div className="flex gap-1 shrink-0">
+                                {item.categories.slice(0, 2).map(cat => (
+                                    <span
+                                        key={cat}
+                                        className="text-[10px] bg-purple-500/30 text-purple-200 px-2 py-0.5 rounded-full"
+                                    >
+                                        {cat}
+                                    </span>
+                                ))}
+                            </div>
+
+                            {/* Title */}
+                            <p className="flex-1 text-sm text-zinc-300 truncate">{item.title}</p>
+
+                            {/* Add to Board button */}
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleAddToBoard(item)}
+                                className="shrink-0 h-7 text-xs text-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/10"
+                            >
+                                + Add to Board
+                            </Button>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
     );
 }
