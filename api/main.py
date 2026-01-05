@@ -6,6 +6,7 @@ FastAPI backend wrapping existing research engine.
 
 import os
 import sys
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -265,23 +266,24 @@ async def planner_projects(x_api_key: str = Header(None)):
     verify_token(x_api_key)
     
     try:
-        from src.agents.planner import Planner
-        planner = Planner()
-        tasks = planner.list_tasks(status="all")
+        from src.agents.planner import PlannerStore
+        store = PlannerStore()
+        tasks = store.list_by_priority(limit=50)
         
         return [
             PlannerTask(
-                id=t.get("id", ""),
-                title=t.get("title", ""),
-                priority=t.get("priority", 3),
-                status=t.get("status", "todo"),
-                category=t.get("category"),
-                source_id=t.get("source_id"),
-                created_at=t.get("created_at", ""),
+                id=t.id,
+                title=t.description,  # PlannerTask uses 'description' for the task text
+                priority=t.priority,
+                status=t.status,
+                category=t.source_id if t.source_id != "manual" else None,
+                source_id=t.source_id,
+                created_at=t.created_at or "",
             )
             for t in tasks
         ]
-    except Exception:
+    except Exception as e:
+        print(f"Error fetching tasks: {e}")
         return []
 
 
@@ -295,7 +297,26 @@ async def planner_create_task(
     """Create a new task."""
     verify_token(x_api_key)
     
-    task_id = f"task_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    from src.agents.planner import PlannerStore, PlannerTask as PlannerTaskModel, TaskStatus, TaskSource
+    
+    task_id = f"task_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Create the task object
+    task = PlannerTaskModel(
+        id=task_id,
+        source_type=TaskSource.MANUAL.value,  # Use .value for SQLite
+        source_id=category or "manual",
+        description=title,
+        priority=priority,
+        status=TaskStatus.TODO.value,  # Use .value for SQLite
+        created_at=now,
+        updated_at=now,
+    )
+    
+    # Persist to database
+    store = PlannerStore()
+    store.create(task)
     
     return PlannerTask(
         id=task_id,
@@ -303,7 +324,7 @@ async def planner_create_task(
         priority=priority,
         status="todo",
         category=category,
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=now,
     )
 
 
