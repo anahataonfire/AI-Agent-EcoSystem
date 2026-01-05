@@ -256,6 +256,33 @@ async def content_browse(limit: int = 50, x_api_key: str = Header(None)):
         return []
 
 
+@app.delete("/content/{content_id}")
+async def content_delete(content_id: str, x_api_key: str = Header(None)):
+    """Delete a content item from the library."""
+    verify_token(x_api_key)
+    
+    try:
+        from pathlib import Path
+        from src.content.store import ContentStore
+        
+        db_path = Path(PROJECT_ROOT) / "data" / "content" / "content.db"
+        store = ContentStore(db_path=db_path)
+        
+        # Delete from database
+        import sqlite3
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.execute("DELETE FROM content_entries WHERE id = ?", (content_id,))
+            if cursor.rowcount > 0:
+                return {"success": True, "deleted_id": content_id}
+            else:
+                raise HTTPException(status_code=404, detail="Content not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Content delete error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ============================================================================
 # Planner Endpoints
 # ============================================================================

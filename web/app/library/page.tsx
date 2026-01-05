@@ -86,6 +86,20 @@ export default function LibraryPage() {
         fetchEvidence();
     }, []);
 
+    const handleDelete = async (id: string) => {
+        try {
+            const res = await fetch(`http://localhost:8000/content/${id}`, {
+                method: "DELETE",
+                headers: { "X-API-Key": "dev-token-change-me" },
+            });
+            if (res.ok) {
+                setContentItems((prev) => prev.filter((item) => item.id !== id));
+            }
+        } catch (e) {
+            console.error("Delete error:", e);
+        }
+    };
+
     const filteredContent = search
         ? contentItems.filter((item) =>
             item.title.toLowerCase().includes(search.toLowerCase()) ||
@@ -104,16 +118,34 @@ export default function LibraryPage() {
         })
         : evidenceItems;
 
+    // Stats
+    const categorizedCount = contentItems.filter((c) => c.categories.length > 0).length;
+    const uncategorizedCount = contentItems.length - categorizedCount;
+
     return (
         <div className="space-y-8">
             {/* Header */}
             <div className="relative">
                 <div className="absolute inset-0 bg-gradient-to-r from-purple-500/10 via-blue-500/10 to-cyan-500/10 rounded-2xl blur-xl" />
                 <div className="relative bg-zinc-900/80 backdrop-blur-sm border border-zinc-800 rounded-2xl p-6">
-                    <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 via-blue-400 to-cyan-400 bg-clip-text text-transparent">
-                        Content Library
-                    </h1>
-                    <p className="text-zinc-400 mt-2">Your curated knowledge and research evidence</p>
+                    <div className="flex items-start justify-between">
+                        <div>
+                            <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 via-blue-400 to-cyan-400 bg-clip-text text-transparent">
+                                Content Library
+                            </h1>
+                            <p className="text-zinc-400 mt-2">Your curated knowledge and research evidence</p>
+                        </div>
+                        <div className="flex gap-3 text-sm">
+                            <div className="bg-purple-500/20 border border-purple-500/30 rounded-xl px-4 py-2">
+                                <span className="text-purple-300 font-medium">{categorizedCount}</span>
+                                <span className="text-zinc-500 ml-1">categorized</span>
+                            </div>
+                            <div className="bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-2">
+                                <span className="text-zinc-300 font-medium">{uncategorizedCount}</span>
+                                <span className="text-zinc-500 ml-1">uncategorized</span>
+                            </div>
+                        </div>
+                    </div>
 
                     <div className="flex gap-4 mt-6">
                         <div className="relative flex-1 max-w-md">
@@ -169,7 +201,12 @@ export default function LibraryPage() {
                     ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                             {filteredContent.map((item) => (
-                                <InteractiveContentCard key={item.id} item={item} onUpdate={fetchContent} />
+                                <ContentCard
+                                    key={item.id}
+                                    item={item}
+                                    onUpdate={fetchContent}
+                                    onDelete={() => handleDelete(item.id)}
+                                />
                             ))}
                         </div>
                     )}
@@ -205,10 +242,22 @@ function EmptyState({ icon, title, description }: { icon: string; title: string;
     );
 }
 
-function InteractiveContentCard({ item, onUpdate }: { item: ContentItem; onUpdate: () => void }) {
+function ContentCard({
+    item,
+    onUpdate,
+    onDelete,
+}: {
+    item: ContentItem;
+    onUpdate: () => void;
+    onDelete: () => void;
+}) {
     const [showCategoryDialog, setShowCategoryDialog] = useState(false);
+    const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
     const [selectedCategories, setSelectedCategories] = useState<string[]>(item.categories);
     const [addingToPlanner, setAddingToPlanner] = useState(false);
+    const [plannerMessage, setPlannerMessage] = useState<string | null>(null);
+
+    const isCategorized = item.categories.length > 0;
 
     const handleCategorize = async () => {
         // TODO: Call API to update categories
@@ -217,55 +266,91 @@ function InteractiveContentCard({ item, onUpdate }: { item: ContentItem; onUpdat
         onUpdate();
     };
 
-    const [plannerMessage, setPlannerMessage] = useState<string | null>(null);
-
     const handleAddToPlanner = async () => {
         setAddingToPlanner(true);
         setPlannerMessage(null);
         try {
-            const res = await fetch("http://localhost:8000/planner/task?title=" + encodeURIComponent(`Review: ${item.title}`), {
-                method: "POST",
-                headers: { "X-API-Key": "dev-token-change-me" },
-            });
+            const res = await fetch(
+                "http://localhost:8000/planner/task?title=" + encodeURIComponent(`Review: ${item.title}`),
+                {
+                    method: "POST",
+                    headers: { "X-API-Key": "dev-token-change-me" },
+                }
+            );
             if (res.ok) {
-                setPlannerMessage("✓ Added to planner!");
-                setTimeout(() => setPlannerMessage(null), 3000);
+                setPlannerMessage("✓ Added!");
+                setTimeout(() => setPlannerMessage(null), 2000);
             } else {
-                setPlannerMessage("✗ Failed to add");
+                setPlannerMessage("✗ Failed");
             }
         } catch (e) {
             console.error("Failed to add to planner:", e);
-            setPlannerMessage("✗ Error adding to planner");
+            setPlannerMessage("✗ Error");
         } finally {
             setAddingToPlanner(false);
         }
     };
 
+    // Clean summary - remove error messages
+    const cleanSummary = item.summary
+        .replace(/Fallback analysis:.*$/gm, "")
+        .replace(/400 INVALID_ARGUMENT.*$/gm, "")
+        .trim() || "No summary available";
+
     return (
         <div className="group relative">
-            <div className="absolute inset-0 bg-gradient-to-r from-purple-500/20 to-blue-500/20 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity blur-xl" />
-            <Card className="relative bg-zinc-900/80 backdrop-blur-sm border-zinc-800 hover:border-zinc-600 transition-all rounded-2xl overflow-hidden">
-                <CardHeader className="pb-3">
-                    <CardTitle className="text-lg font-semibold line-clamp-2 text-zinc-100">
-                        {item.title}
-                    </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                    <CardDescription className="line-clamp-3 text-zinc-400">
-                        {item.summary}
-                    </CardDescription>
+            {/* Glow effect for categorized items */}
+            <div
+                className={`absolute inset-0 rounded-2xl blur-xl transition-opacity ${isCategorized
+                        ? "bg-gradient-to-r from-purple-500/30 to-blue-500/30 opacity-50 group-hover:opacity-75"
+                        : "bg-gradient-to-r from-zinc-500/10 to-zinc-500/10 opacity-0 group-hover:opacity-50"
+                    }`}
+            />
 
-                    {/* Categories */}
-                    <div className="flex flex-wrap gap-1.5">
-                        {item.categories.map((cat) => (
+            <Card
+                className={`relative h-full backdrop-blur-sm rounded-2xl overflow-hidden transition-all ${isCategorized
+                        ? "bg-gradient-to-br from-zinc-900/90 via-zinc-900/80 to-purple-900/20 border-purple-500/30 hover:border-purple-400/50"
+                        : "bg-zinc-900/80 border-zinc-800 hover:border-zinc-600"
+                    }`}
+            >
+                {/* Category badge at top */}
+                {isCategorized && (
+                    <div className="absolute top-3 right-3 flex flex-wrap gap-1 justify-end max-w-[60%]">
+                        {item.categories.slice(0, 2).map((cat) => (
                             <span
                                 key={cat}
-                                className="text-xs bg-gradient-to-r from-purple-500/20 to-blue-500/20 text-purple-300 px-2.5 py-1 rounded-full border border-purple-500/30"
+                                className="text-[10px] bg-purple-500/30 text-purple-200 px-2 py-0.5 rounded-full border border-purple-500/40"
                             >
                                 {cat}
                             </span>
                         ))}
+                        {item.categories.length > 2 && (
+                            <span className="text-[10px] text-purple-400">
+                                +{item.categories.length - 2}
+                            </span>
+                        )}
                     </div>
+                )}
+
+                {/* Uncategorized badge */}
+                {!isCategorized && (
+                    <div className="absolute top-3 right-3">
+                        <span className="text-[10px] bg-zinc-700/50 text-zinc-400 px-2 py-0.5 rounded-full border border-zinc-600/50">
+                            Uncategorized
+                        </span>
+                    </div>
+                )}
+
+                <CardHeader className="pb-2 pr-24">
+                    <CardTitle className="text-base font-semibold line-clamp-2 text-zinc-100">
+                        {item.title}
+                    </CardTitle>
+                </CardHeader>
+
+                <CardContent className="space-y-3 pb-4">
+                    <CardDescription className="line-clamp-3 text-zinc-400 text-sm">
+                        {cleanSummary}
+                    </CardDescription>
 
                     {/* Source Link */}
                     {item.source_url && (
@@ -273,23 +358,31 @@ function InteractiveContentCard({ item, onUpdate }: { item: ContentItem; onUpdat
                             href={item.source_url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-sm text-blue-400 hover:text-blue-300 transition-colors"
+                            className="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors"
                         >
                             <span>🔗</span>
-                            <span className="hover:underline">{new URL(item.source_url).hostname}</span>
+                            <span className="hover:underline truncate max-w-[200px]">
+                                {(() => {
+                                    try {
+                                        return new URL(item.source_url).hostname;
+                                    } catch {
+                                        return item.source_url.slice(0, 30);
+                                    }
+                                })()}
+                            </span>
                         </a>
                     )}
 
-                    {/* Action Buttons */}
-                    <div className="flex gap-2 pt-2 border-t border-zinc-800">
+                    {/* Action Bar */}
+                    <div className="flex items-center gap-1 pt-2 border-t border-zinc-800">
                         <Dialog open={showCategoryDialog} onOpenChange={setShowCategoryDialog}>
                             <DialogTrigger asChild>
                                 <Button
                                     variant="ghost"
                                     size="sm"
-                                    className="flex-1 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                                    className="flex-1 h-8 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
                                 >
-                                    🏷️ Categorize
+                                    🏷️
                                 </Button>
                             </DialogTrigger>
                             <DialogContent className="bg-zinc-900 border-zinc-800">
@@ -310,9 +403,10 @@ function InteractiveContentCard({ item, onUpdate }: { item: ContentItem; onUpdat
                                                         : [...prev, cat]
                                                 );
                                             }}
-                                            className={selectedCategories.includes(cat)
-                                                ? "bg-gradient-to-r from-purple-500 to-blue-500"
-                                                : "border-zinc-700"
+                                            className={
+                                                selectedCategories.includes(cat)
+                                                    ? "bg-gradient-to-r from-purple-500 to-blue-500"
+                                                    : "border-zinc-700"
                                             }
                                         >
                                             {cat}
@@ -323,7 +417,10 @@ function InteractiveContentCard({ item, onUpdate }: { item: ContentItem; onUpdat
                                     <DialogClose asChild>
                                         <Button variant="ghost">Cancel</Button>
                                     </DialogClose>
-                                    <Button onClick={handleCategorize} className="bg-gradient-to-r from-purple-500 to-blue-500">
+                                    <Button
+                                        onClick={handleCategorize}
+                                        className="bg-gradient-to-r from-purple-500 to-blue-500"
+                                    >
                                         Save Categories
                                     </Button>
                                 </DialogFooter>
@@ -333,7 +430,7 @@ function InteractiveContentCard({ item, onUpdate }: { item: ContentItem; onUpdat
                         <Button
                             variant="ghost"
                             size="sm"
-                            className={`flex-1 transition-all ${plannerMessage?.includes("✓")
+                            className={`flex-1 h-8 text-xs transition-all ${plannerMessage?.includes("✓")
                                     ? "text-green-400 bg-green-500/10"
                                     : plannerMessage?.includes("✗")
                                         ? "text-red-400 bg-red-500/10"
@@ -342,8 +439,43 @@ function InteractiveContentCard({ item, onUpdate }: { item: ContentItem; onUpdat
                             onClick={handleAddToPlanner}
                             disabled={addingToPlanner}
                         >
-                            {plannerMessage || (addingToPlanner ? "⟳ Adding..." : "📋 Add to Planner")}
+                            {plannerMessage || (addingToPlanner ? "⟳" : "📋")}
                         </Button>
+
+                        {/* Delete Button */}
+                        <Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+                            <DialogTrigger asChild>
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-8 text-xs text-zinc-500 hover:text-red-400 hover:bg-red-500/10"
+                                >
+                                    🗑️
+                                </Button>
+                            </DialogTrigger>
+                            <DialogContent className="bg-zinc-900 border-zinc-800">
+                                <DialogHeader>
+                                    <DialogTitle className="text-red-400">Delete Content</DialogTitle>
+                                    <DialogDescription>
+                                        Are you sure you want to delete "{item.title}"? This cannot be undone.
+                                    </DialogDescription>
+                                </DialogHeader>
+                                <DialogFooter>
+                                    <DialogClose asChild>
+                                        <Button variant="ghost">Cancel</Button>
+                                    </DialogClose>
+                                    <Button
+                                        onClick={() => {
+                                            onDelete();
+                                            setShowDeleteConfirm(false);
+                                        }}
+                                        className="bg-red-500 hover:bg-red-600"
+                                    >
+                                        Delete
+                                    </Button>
+                                </DialogFooter>
+                            </DialogContent>
+                        </Dialog>
                     </div>
                 </CardContent>
             </Card>
@@ -365,10 +497,12 @@ function EvidenceCard({ item }: { item: EvidenceItem }) {
                         <CardTitle className="text-lg font-semibold line-clamp-2 text-zinc-100">
                             {title}
                         </CardTitle>
-                        <span className={`shrink-0 text-xs px-2.5 py-1 rounded-full ${item.lifecycle === "active"
-                            ? "bg-green-500/20 text-green-400 border border-green-500/30"
-                            : "bg-zinc-700 text-zinc-400"
-                            }`}>
+                        <span
+                            className={`shrink-0 text-xs px-2.5 py-1 rounded-full ${item.lifecycle === "active"
+                                    ? "bg-green-500/20 text-green-400 border border-green-500/30"
+                                    : "bg-zinc-700 text-zinc-400"
+                                }`}
+                        >
                             {item.lifecycle}
                         </span>
                     </div>
