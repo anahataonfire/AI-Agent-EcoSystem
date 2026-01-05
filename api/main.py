@@ -228,9 +228,12 @@ async def content_browse(limit: int = 50, x_api_key: str = Header(None)):
     verify_token(x_api_key)
     
     try:
+        from pathlib import Path
         from src.content.store import ContentStore
         
-        store = ContentStore()
+        # Use absolute path to ensure we find the right database
+        db_path = Path(PROJECT_ROOT) / "data" / "content" / "content.db"
+        store = ContentStore(db_path=db_path)
         entries = store.list_entries(limit=limit)
         
         return [
