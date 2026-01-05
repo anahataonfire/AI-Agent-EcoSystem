@@ -18,8 +18,6 @@ from .base import (
     PROJECT_ROOT,
     AGENT_ID_PATTERN,
 )
-from .strategist import StrategistAgent
-from .researcher import ResearcherAgent
 from .reporter import ReporterAgent
 from .diagnostician import DiagnosticianAgent
 
@@ -38,8 +36,6 @@ __all__ = [
     'PROJECT_ROOT',
     'AGENT_ID_PATTERN',
     # Agents
-    'StrategistAgent',
-    'ResearcherAgent', 
     'ReporterAgent',
     'DiagnosticianAgent',
 ]

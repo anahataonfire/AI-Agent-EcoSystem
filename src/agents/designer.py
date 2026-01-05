@@ -23,8 +23,6 @@ class DesignAgent(BaseAgent):
     - suggest_layout: Propose layout improvements
     - suggest_colors: Recommend color scheme changes
     - suggest_spacing: Identify padding/margin issues
-    - generate_mockup: Create HTML/CSS mockups
-    - accessibility_audit: Check WCAG compliance
     """
     
     SKILL_FILE = "designer.skill.md"
@@ -72,14 +70,8 @@ class DesignAgent(BaseAgent):
         if action == "analyze":
             result = self.analyze_ui(ui_code, context)
             claims = ["analyze_ui", "suggest_layout", "suggest_spacing", "suggest_colors"]
-        elif action == "mockup":
-            result = self.generate_mockup(input_data.get("description", ""))
-            claims = ["generate_mockup"]
-        elif action == "accessibility":
-            result = self.accessibility_audit(ui_code)
-            claims = ["accessibility_audit"]
         else:
-            result = {"error": f"Unknown action: {action}"}
+            result = {"error": f"Unknown action: {action}. Only 'analyze' is supported."}
             claims = []
         
         return self.wrap_output(result, claims)
@@ -163,103 +155,3 @@ Be specific and constructive. Limit to top 10 most impactful issues."""
             
         except Exception as e:
             return {"error": f"Analysis failed: {e}"}
-    
-    def generate_mockup(self, description: str) -> dict:
-        """
-        Generate HTML/CSS mockup from description.
-        
-        Args:
-            description: Natural language description of desired UI
-        
-        Returns:
-            dict with HTML/CSS mockup code
-        """
-        if not description:
-            return {"error": "No description provided"}
-        
-        prompt = f"""You are a UI designer. Generate clean, modern HTML/CSS for:
-
-{description}
-
-Requirements:
-- Use flexbox/grid for layout
-- Include subtle shadows and rounded corners
-- Use a professional color palette
-- Make it responsive
-- Add hover states for interactive elements
-
-Return ONLY valid HTML with embedded CSS. No markdown code blocks."""
-
-        try:
-            response = self.client.models.generate_content(
-                model=self._model_id,
-                contents=prompt,
-            )
-            
-            return {
-                "status": "generated",
-                "mockup_html": response.text,
-                "timestamp": datetime.now().isoformat(),
-            }
-            
-        except Exception as e:
-            return {"error": f"Mockup generation failed: {e}"}
-    
-    def accessibility_audit(self, ui_code: str) -> dict:
-        """
-        Audit UI code for accessibility issues (WCAG 2.1 AA).
-        
-        Args:
-            ui_code: The source code to audit
-        
-        Returns:
-            dict with accessibility issues and recommendations
-        """
-        if not ui_code:
-            return {"error": "No UI code provided"}
-        
-        prompt = f"""You are an accessibility expert. Audit this UI code for WCAG 2.1 AA compliance.
-
-UI CODE:
-```
-{ui_code[:8000]}
-```
-
----
-
-Return JSON with:
-{{
-  "score": "A|AA|AAA|Fail",
-  "issues": [
-    {{
-      "wcag_criterion": "e.g., 1.4.3 Contrast",
-      "severity": "critical|major|minor",
-      "description": "What's wrong",
-      "fix": "How to fix it"
-    }}
-  ],
-  "passed_checks": ["List of things done correctly"],
-  "recommendations": ["Suggested improvements"]
-}}"""
-
-        try:
-            response = self.client.models.generate_content(
-                model=self._model_id,
-                contents=prompt,
-            )
-            
-            text = response.text
-            json_match = re.search(r'\{[\s\S]*\}', text)
-            if json_match:
-                audit = json.loads(json_match.group())
-            else:
-                audit = {"raw_response": text}
-            
-            return {
-                "status": "audited",
-                "audit": audit,
-                "timestamp": datetime.now().isoformat(),
-            }
-            
-        except Exception as e:
-            return {"error": f"Accessibility audit failed: {e}"}

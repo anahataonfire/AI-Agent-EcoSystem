@@ -7,16 +7,17 @@ and learns from user feedback to improve future suggestions.
 
 import json
 import os
+import sqlite3
 from pathlib import Path
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
 from .base import BaseAgent, ProposalEnvelope
 
 
-# Memory storage path
-MEMORY_PATH = Path(__file__).parent.parent.parent / "data" / "advisor_memory.json"
+# SQLite database path
+DB_PATH = Path(__file__).parent.parent.parent / "data" / "advisor_learning.db"
 
 
 @dataclass
@@ -30,57 +31,151 @@ class Suggestion:
     accepted: Optional[bool] = None
 
 
-@dataclass
 class AdvisorMemory:
-    """Learning memory for the advisor."""
-    category_preferences: dict = field(default_factory=dict)
-    action_patterns: list = field(default_factory=list)
-    feedback_history: list = field(default_factory=list)
+    """Learning memory for the advisor (SQLite-backed)."""
     
-    def save(self, path: Path = MEMORY_PATH):
-        """Persist memory to disk."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(asdict(self), f, indent=2, default=str)
+    def __init__(self, db_path: Path = DB_PATH):
+        self.db_path = db_path
+        self._init_db()
     
-    @classmethod
-    def load(cls, path: Path = MEMORY_PATH) -> "AdvisorMemory":
-        """Load memory from disk."""
-        if path.exists():
-            with open(path) as f:
-                data = json.load(f)
-                return cls(**data)
-        return cls()
+    def _init_db(self):
+        """Initialize SQLite database with schema."""
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS learning_patterns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pattern_type TEXT NOT NULL,
+                context TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                confidence REAL DEFAULT 0.5,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pattern_type ON learning_patterns(pattern_type)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON learning_patterns(created_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_outcome ON learning_patterns(outcome)")
+        
+        conn.commit()
+        conn.close()
     
     def record_feedback(self, content_id: str, suggestion_type: str, 
                        suggested: str, accepted: bool, notes: str = ""):
         """Record user feedback for learning."""
-        self.feedback_history.append({
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        now = datetime.now().isoformat()
+        context = json.dumps({
             "content_id": content_id,
-            "type": suggestion_type,
             "suggested": suggested,
-            "accepted": accepted,
-            "notes": notes,
-            "timestamp": datetime.now().isoformat(),
+            "notes": notes
         })
+        outcome = "accepted" if accepted else "rejected"
         
-        # Update category preferences
-        if suggestion_type == "category":
-            if suggested not in self.category_preferences:
-                self.category_preferences[suggested] = {"accepts": 0, "rejects": 0, "weight": 1.0}
+        cursor.execute("""
+            INSERT INTO learning_patterns
+            (pattern_type, context, outcome, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            suggestion_type,
+            context,
+            outcome,
+            now,
+            now
+        ))
+        
+        conn.commit()
+        conn.close()
+    
+    @property
+    def feedback_history(self) -> list:
+        """Get all feedback history from database."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT pattern_type, context, outcome, created_at
+            FROM learning_patterns
+            ORDER BY created_at DESC
+        """)
+        
+        results = []
+        for row in cursor.fetchall():
+            pattern_type, context_json, outcome, created_at = row
+            context = json.loads(context_json)
+            results.append({
+                "type": pattern_type,
+                "content_id": context.get("content_id"),
+                "suggested": context.get("suggested"),
+                "accepted": outcome == "accepted",
+                "notes": context.get("notes", ""),
+                "timestamp": created_at,
+            })
+        
+        conn.close()
+        return results
+    
+    @property
+    def category_preferences(self) -> dict:
+        """Get category preferences from database."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT context, outcome
+            FROM learning_patterns
+            WHERE pattern_type = 'category'
+        """)
+        
+        prefs = {}
+        for row in cursor.fetchall():
+            context_json, outcome = row
+            context = json.loads(context_json)
+            category = context.get("suggested")
             
-            if accepted:
-                self.category_preferences[suggested]["accepts"] += 1
-            else:
-                self.category_preferences[suggested]["rejects"] += 1
+            if category and category not in prefs:
+                prefs[category] = {"accepts": 0, "rejects": 0, "weight": 1.0}
             
-            # Recalculate weight
-            prefs = self.category_preferences[suggested]
-            total = prefs["accepts"] + prefs["rejects"]
+            if category:
+                if outcome == "accepted":
+                    prefs[category]["accepts"] += 1
+                else:
+                    prefs[category]["rejects"] += 1
+        
+        # Recalculate weights
+        for category, data in prefs.items():
+            total = data["accepts"] + data["rejects"]
             if total > 0:
-                prefs["weight"] = prefs["accepts"] / total
+                data["weight"] = data["accepts"] / total
         
-        self.save()
+        conn.close()
+        return prefs
+    
+    @property
+    def action_patterns(self) -> list:
+        """Get action patterns from database."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT context, outcome
+            FROM learning_patterns
+            WHERE pattern_type = 'action'
+        """)
+        
+        patterns = []
+        for row in cursor.fetchall():
+            context_json, outcome = row
+            context = json.loads(context_json)
+            patterns.append({**context, "outcome": outcome})
+        
+        conn.close()
+        return patterns
 
 
 class CuratorAdvisor(BaseAgent):
@@ -110,7 +205,7 @@ class CuratorAdvisor(BaseAgent):
         
         self.content_store = content_store
         self.api_key = api_key or os.environ.get("GOOGLE_API_KEY")
-        self.memory = AdvisorMemory.load()
+        self.memory = AdvisorMemory()
         self._client = None
         self._model_id = "gemini-2.0-flash"
     

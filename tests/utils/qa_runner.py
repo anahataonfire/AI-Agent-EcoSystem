@@ -1,19 +1,20 @@
 """
-QA Agent Node for automated regression testing.
+QA Runner Utility
 
-This module provides functions to:
-- Load test cases from test_suite.yaml
-- Run individual or all tests against the pipeline
-- Compare telemetry against expected values
-- Log results to regression_log.json
+Refactored from previous QA Node Agent.
+Provides functions to run regression tests from test_suite.yaml.
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-
+from typing import Any, Dict, List
 import yaml
+
+# Adjust imports for new location
+import sys
+# Ensure src is in path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.graph.workflow import run_pipeline
 
@@ -60,9 +61,6 @@ def evaluate_test(
 ) -> Dict[str, Any]:
     """
     Evaluate a test result against expected values.
-    
-    Returns:
-        Dict with 'passed', 'checks', and 'failures' keys.
     """
     expected = test_case.get("expected", {})
     telemetry = result.get("telemetry", {})
@@ -146,12 +144,7 @@ def evaluate_test(
 
 
 def run_test(test_id: str) -> Dict[str, Any]:
-    """
-    Run a specific test by ID.
-    
-    Returns:
-        Dict with test results and evaluation.
-    """
+    """Run a specific test by ID."""
     tests = load_test_suite()
     test_case = next((t for t in tests if t["test_id"] == test_id), None)
     
@@ -170,7 +163,7 @@ def run_test(test_id: str) -> Dict[str, Any]:
         
         # Build result record
         record = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now().isoformat(),
             "test_id": test_id,
             "query": query,
             "telemetry": result.get("telemetry", {}),
@@ -189,7 +182,7 @@ def run_test(test_id: str) -> Dict[str, Any]:
         
     except Exception as e:
         record = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now().isoformat(),
             "test_id": test_id,
             "query": query,
             "status": "ERROR",
@@ -205,12 +198,7 @@ def run_test(test_id: str) -> Dict[str, Any]:
 
 
 def run_all_tests() -> Dict[str, Any]:
-    """
-    Run all tests in the test suite.
-    
-    Returns:
-        Dict with summary and individual results.
-    """
+    """Run all tests in the test suite."""
     tests = load_test_suite()
     results = []
     
@@ -225,7 +213,7 @@ def run_all_tests() -> Dict[str, Any]:
     errors = sum(1 for r in results if r.get("status") == "ERROR")
     
     return {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now().isoformat(),
         "total": len(results),
         "passed": passed,
         "failed": failed,

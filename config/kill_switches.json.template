@@ -1,0 +1,14 @@
+{
+  "version": "1.0.0",
+  "switches": {
+    "GLOBAL_SHUTDOWN": false,
+    "TRUE_REUSE": false,
+    "EVIDENCE_REUSE": false,
+    "GROUNDING": false,
+    "LEARNING": false,
+    "LLM_CALLS": false
+  },
+  "last_updated": "2026-01-04T12:07:00Z",
+  "updated_by": "system_init",
+  "description": "Global kill switch configuration. Set any switch to true to disable that feature at runtime."
+}

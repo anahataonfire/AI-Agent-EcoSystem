@@ -18,6 +18,7 @@ from src.core.evidence_store import EvidenceStore
 from src.core.schemas import ToolResult
 from src.graph.state import ItemStatus, RunState
 from src.mcp_servers.rss_fetcher import execute_data_fetch_rss
+from src.tools.market_tools import fetch_market_data, fetch_news, fetch_sentiment
 
 from langchain_core.messages import BaseMessage
 
@@ -25,6 +26,9 @@ from langchain_core.messages import BaseMessage
 # Tool registry - maps tool names to executor functions
 TOOL_REGISTRY = {
     "DataFetchRSS": execute_data_fetch_rss,
+    "fetch_market_data": fetch_market_data,
+    "fetch_news": fetch_news,
+    "fetch_sentiment": fetch_sentiment,
 }
 
 
@@ -1299,6 +1303,56 @@ def reporter_node(state: RunState) -> Dict[str, Any]:
             metadata=report_metadata,
             custom_id=report_id
         )
+    
+    # =========================================================================
+    # META-ANALYST AUTO-TRIGGER (Quick Win #2)
+    # =========================================================================
+    # Auto-analyze completed runs and create improvement tasks
+    if is_successful and not telemetry.get("grounding_failures", 0):
+        try:
+            from src.agents.meta_analyst import MetaAnalystAgent
+            from src.agents.planner import PlannerAgent
+            from src.content.store import ContentStore
+            
+            # Get run_id from state (or fallback)
+            run_id = f"run-{query_hash}"  # Use query hash as stable run ID
+            
+            analyst = MetaAnalystAgent(workspace_root=".")
+            
+            # Analyze this run
+            envelope = analyst.process(
+                run_ids=[run_id],
+                lookback_days=1
+            )
+            
+            # Extract improvement tasks
+            packet = envelope.get("payload", {})
+            recommendations = packet.get("recommendations", [])
+            
+            # Auto-create tasks in Planner
+            if recommendations:
+                planner = PlannerAgent(content_store=ContentStore())
+                for rec in recommendations:
+                    # Map risk level to priority
+                    risk_to_priority = {"high": 2, "medium": 3, "low": 4}
+                    priority = risk_to_priority.get(rec.get("risk_level", "medium"), 3)
+                    
+                    planner._create_task({
+                        "description": f"[MetaAnalyst] {rec['title']}",
+                        "priority": priority,
+                        "source_type": "system",
+                        "source_id": packet.get("packet_id", "unknown"),
+                        "notes": rec.get("rationale", ""),
+                    })
+                
+                # Update telemetry
+                telemetry["meta_analyst_triggered"] = True
+                telemetry["improvements_generated"] = len(recommendations)
+        
+        except Exception as e:
+            # Don't fail the report if MetaAnalyst fails
+            print(f"Warning: MetaAnalyst post-run analysis failed: {e}")
+            telemetry["meta_analyst_error"] = str(e)
 
     # DETERMINE FOOTER MODE
     footer_mode = "Normal" if is_successful else "Fallback"

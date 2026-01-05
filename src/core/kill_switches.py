@@ -12,7 +12,10 @@ Usage:
         raise KillSwitchError(reason)
 """
 
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict
+import json
+import time
+from pathlib import Path
 
 
 class KillSwitchError(Exception):
@@ -21,7 +24,58 @@ class KillSwitchError(Exception):
 
 
 # ============================================================================
-# KILL SWITCH REGISTRY
+# FILE-BASED KILL SWITCH CONFIGURATION
+# ============================================================================
+
+_SWITCH_FILE = Path("data/kill_switches.json")
+_SWITCH_CACHE: Dict = {}
+_LAST_LOAD_TIME: float = 0
+_CACHE_TTL: int = 60  # seconds
+
+
+def load_switches_from_file() -> Dict:
+    """
+    Load kill switches from file with caching.
+    
+    Falls back to hardcoded constants if file doesn't exist or is invalid.
+    Cache refreshes every 60 seconds to allow runtime changes.
+    
+    Returns:
+        Dict mapping switch names to their enabled/disabled state.
+    """
+    global _SWITCH_CACHE, _LAST_LOAD_TIME
+    
+    now = time.time()
+    
+    # Check cache
+    if _SWITCH_CACHE and (now - _LAST_LOAD_TIME) < _CACHE_TTL:
+        return _SWITCH_CACHE
+    
+    # Try to load from file
+    if _SWITCH_FILE.exists():
+        try:
+            with open(_SWITCH_FILE, 'r') as f:
+                data = json.load(f)
+                _SWITCH_CACHE = data.get("switches", {})
+                _LAST_LOAD_TIME = now
+                return _SWITCH_CACHE
+        except Exception as e:
+            # Fallback to hardcoded on file error
+            print(f"Warning: Failed to load kill switches from file: {e}")
+    
+    # Fallback to hardcoded constants
+    return {
+        "GLOBAL_SHUTDOWN": False,
+        "TRUE_REUSE": DISABLE_TRUE_REUSE,
+        "EVIDENCE_REUSE": DISABLE_EVIDENCE_REUSE,
+        "GROUNDING": DISABLE_GROUNDING,
+        "LEARNING": DISABLE_LEARNING,
+        "LLM_CALLS": False,
+    }
+
+
+# ============================================================================
+# KILL SWITCH REGISTRY (HARDCODED FALLBACK)
 # ============================================================================
 # These switches provide operator-level control over execution paths.
 # Set to True to disable the corresponding feature.
@@ -36,10 +90,12 @@ DISABLE_LEARNING = False  # Strategic Autonomy learning
 # ============================================================================
 
 _SWITCH_MESSAGES = {
+    "GLOBAL_SHUTDOWN": "GLOBAL SHUTDOWN ACTIVATED - All operations halted by operator.",
     "TRUE_REUSE": "True Reuse is currently disabled by operator.",
     "EVIDENCE_REUSE": "Evidence Reuse is currently disabled by operator.",
     "GROUNDING": "Grounding validation is currently disabled by operator.",
     "LEARNING": "Strategic Autonomy learning is currently disabled by operator.",
+    "LLM_CALLS": "LLM calls are currently disabled by operator.",
 }
 
 _SWITCH_REGISTRY = {
@@ -67,10 +123,15 @@ def check_kill_switch(switch_name: str) -> Tuple[bool, Optional[str]]:
         if halted:
             return {"messages": [AIMessage(content=f"# Execution Halted\\nReason: {reason}")]}
     """
-    if switch_name not in _SWITCH_REGISTRY:
-        raise ValueError(f"Unknown kill switch: {switch_name}. Valid: {list(_SWITCH_REGISTRY.keys())}")
+    # Load switches from file (or fallback to hardcoded)
+    switches = load_switches_from_file()
     
-    is_disabled = _SWITCH_REGISTRY[switch_name]()
+    # Check global shutdown first
+    if switches.get("GLOBAL_SHUTDOWN", False):
+        return (True, _SWITCH_MESSAGES["GLOBAL_SHUTDOWN"])
+    
+    # Check specific switch
+    is_disabled = switches.get(switch_name, False)
     
     if is_disabled:
         message = _SWITCH_MESSAGES.get(switch_name, f"{switch_name} is disabled by operator.")
@@ -86,11 +147,7 @@ def get_all_switch_states() -> dict:
     Returns:
         Dict mapping switch names to their current enabled/disabled state.
     """
-    return {
-        "TRUE_REUSE": DISABLE_TRUE_REUSE,
-        "EVIDENCE_REUSE": DISABLE_EVIDENCE_REUSE,
-        "GROUNDING": DISABLE_GROUNDING,
-    }
+    return load_switches_from_file()
 
 
 def build_halt_message(reason: str) -> str:
