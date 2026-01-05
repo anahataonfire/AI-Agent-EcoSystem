@@ -222,6 +222,34 @@ async def library_search(q: str, x_api_key: str = Header(None)):
     return []
 
 
+@app.get("/content/browse", response_model=List[LibraryItem])
+async def content_browse(limit: int = 50, x_api_key: str = Header(None)):
+    """Browse curated content store (user's saved links)."""
+    verify_token(x_api_key)
+    
+    try:
+        from src.content.store import ContentStore
+        
+        store = ContentStore()
+        items = store.list_recent(limit=limit)
+        
+        return [
+            LibraryItem(
+                id=str(item.get("id", "")),
+                title=item.get("title", "Untitled"),
+                summary=item.get("summary", "")[:500] if item.get("summary") else "",
+                source_url=item.get("url"),
+                categories=item.get("categories", []) if isinstance(item.get("categories"), list) else [],
+                action_items=item.get("action_items", []) if isinstance(item.get("action_items"), list) else [],
+                created_at=str(item.get("created_at", "")),
+            )
+            for item in items
+        ]
+    except Exception as e:
+        print(f"Content browse error: {e}")
+        return []
+
+
 # ============================================================================
 # Planner Endpoints
 # ============================================================================
@@ -339,26 +367,71 @@ async def feedback_submit(request: FeedbackRequest, x_api_key: str = Header(None
 
 @app.get("/learning/summary")
 async def learning_summary(x_api_key: str = Header(None)):
-    """Get user's learning/preference summary."""
+    """Get user's learning/preference summary from advisor memory."""
     verify_token(x_api_key)
     
     try:
-        from src.agents.advisor import Advisor
+        import sqlite3
+        from pathlib import Path
         
-        advisor = Advisor()
-        memory = advisor.memory
+        db_path = Path(PROJECT_ROOT) / "data" / "advisor_learning.db"
+        if not db_path.exists():
+            return {"feedback_count": 0, "patterns": [], "categories": {}}
+        
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Get total feedback count
+        cursor.execute("SELECT COUNT(*) FROM learning_patterns")
+        feedback_count = cursor.fetchone()[0]
+        
+        # Get recent patterns
+        cursor.execute("""
+            SELECT pattern_type, context, outcome, confidence, created_at 
+            FROM learning_patterns 
+            ORDER BY created_at DESC 
+            LIMIT 20
+        """)
+        patterns = [
+            {
+                "type": row[0],
+                "context": row[1],
+                "outcome": row[2],
+                "confidence": row[3],
+                "created_at": row[4],
+            }
+            for row in cursor.fetchall()
+        ]
+        
+        # Get category counts (accepted only)
+        cursor.execute("""
+            SELECT context, COUNT(*) as cnt
+            FROM learning_patterns 
+            WHERE pattern_type = 'category' AND outcome = 'accepted'
+            GROUP BY context
+        """)
+        
+        # Parse categories from context JSON
+        import json
+        category_counts: Dict[str, int] = {}
+        for row in cursor.fetchall():
+            try:
+                ctx = json.loads(row[0])
+                cat = ctx.get("suggested", "Unknown")
+                category_counts[cat] = category_counts.get(cat, 0) + row[1]
+            except:
+                pass
+        
+        conn.close()
         
         return {
-            "feedback_count": len(memory.feedback_history),
-            "top_categories": list(memory.category_preferences.keys())[:5],
-            "action_patterns": memory.action_patterns,
+            "feedback_count": feedback_count,
+            "patterns": patterns,
+            "categories": category_counts,
         }
-    except Exception:
-        return {
-            "feedback_count": 0,
-            "top_categories": [],
-            "action_patterns": {},
-        }
+    except Exception as e:
+        print(f"Learning summary error: {e}")
+        return {"feedback_count": 0, "patterns": [], "categories": {}}
 
 
 # ============================================================================
