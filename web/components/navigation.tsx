@@ -6,11 +6,16 @@ import { cn } from "@/lib/utils";
 
 const navItems = [
     { href: "/", label: "Dashboard", icon: "🏠" },
+    { href: "/mission", label: "Mission Control", icon: "🛰️" },
+    { href: "/polymarket", label: "Polymarket Scanner", icon: "🎯" },
+    { href: "/hangar", label: "The Hangar", icon: "🛠️" },
+    { href: "/architecture", label: "Architecture", icon: "🏗️" },
     { href: "/inbox", label: "Inbox", icon: "📥" },
-    { href: "/library", label: "Library", icon: "📚" },
+    { href: "/library", label: "Content Library", icon: "📚" },
     { href: "/planner", label: "Planner", icon: "📋" },
     { href: "/research", label: "Research", icon: "🔬" },
-    { href: "/learning", label: "Learning", icon: "🧠" },
+    { href: "/advisor", label: "Advisor Chat", icon: "🧠" },
+    { href: "/learning", label: "Learning", icon: "📈" },
 ];
 
 export function Navigation() {
@@ -19,7 +24,7 @@ export function Navigation() {
     return (
         <nav className="w-56 border-r border-zinc-800 bg-zinc-900/50 p-4 flex flex-col gap-1">
             <div className="mb-6">
-                <h1 className="text-xl font-bold text-zinc-50">DTL</h1>
+                <h1 className="text-xl font-bold text-zinc-50">Valhalla V3</h1>
                 <p className="text-xs text-zinc-500">Personal Intelligence</p>
             </div>
 
