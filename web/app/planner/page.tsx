@@ -1,7 +1,28 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useState, useEffect, useMemo } from "react";
+import {
+    DndContext,
+    DragOverlay,
+    closestCenter,
+    KeyboardSensor,
+    PointerSensor,
+    useSensor,
+    useSensors,
+    DragStartEvent,
+    DragEndEvent,
+    DragOverEvent,
+    useDroppable,
+} from "@dnd-kit/core";
+import {
+    arrayMove,
+    SortableContext,
+    sortableKeyboardCoordinates,
+    verticalListSortingStrategy,
+    useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -24,18 +45,36 @@ interface Task {
     created_at: string;
 }
 
+type ColumnId = "todo" | "in_progress" | "done";
+
+const COLUMNS: { id: ColumnId; title: string; icon: string; color: string }[] = [
+    { id: "todo", title: "To Do", icon: "📋", color: "from-blue-500 to-cyan-500" },
+    { id: "in_progress", title: "In Progress", icon: "⚡", color: "from-violet-500 to-purple-500" },
+    { id: "done", title: "Done", icon: "✅", color: "from-emerald-500 to-teal-500" },
+];
+
 const PRIORITY_CONFIG = {
-    1: { label: "P1 - Urgent", color: "from-red-500 to-orange-500", bg: "bg-red-500/20 border-red-500/30" },
-    2: { label: "P2 - High", color: "from-yellow-500 to-amber-500", bg: "bg-yellow-500/20 border-yellow-500/30" },
-    3: { label: "P3 - Normal", color: "from-blue-500 to-cyan-500", bg: "bg-blue-500/20 border-blue-500/30" },
+    1: { label: "P1", color: "bg-red-500/20 border-red-500/30 text-red-400" },
+    2: { label: "P2", color: "bg-yellow-500/20 border-yellow-500/30 text-yellow-400" },
+    3: { label: "P3", color: "bg-blue-500/20 border-blue-500/30 text-blue-400" },
 };
 
 export default function PlannerPage() {
     const [tasks, setTasks] = useState<Task[]>([]);
-    const [loading, setLoading] = useState(false);
+    const [loading, setLoading] = useState(true);
+    const [activeTask, setActiveTask] = useState<Task | null>(null);
+    const [showAddDialog, setShowAddDialog] = useState(false);
     const [newTaskTitle, setNewTaskTitle] = useState("");
     const [newTaskPriority, setNewTaskPriority] = useState(2);
-    const [showAddDialog, setShowAddDialog] = useState(false);
+
+    const sensors = useSensors(
+        useSensor(PointerSensor, {
+            activationConstraint: { distance: 5 },
+        }),
+        useSensor(KeyboardSensor, {
+            coordinateGetter: sortableKeyboardCoordinates,
+        })
+    );
 
     const fetchTasks = async () => {
         setLoading(true);
@@ -47,13 +86,13 @@ export default function PlannerPage() {
             const data = await res.json();
             setTasks(data);
         } catch {
-            // Use demo data
+            // Demo data for development
             setTasks([
-                { id: "1", title: "Review earnings data integration", priority: 1, status: "in_progress", created_at: new Date().toISOString() },
-                { id: "2", title: "Set up Polymarket auto-scanner", priority: 1, status: "todo", created_at: new Date().toISOString() },
-                { id: "3", title: "Document API endpoints", priority: 2, status: "todo", created_at: new Date().toISOString() },
-                { id: "4", title: "Implement feedback learning loop", priority: 2, status: "in_progress", created_at: new Date().toISOString() },
-                { id: "5", title: "Add TanStack Table", priority: 3, status: "done", created_at: new Date().toISOString() },
+                { id: "demo-1", title: "Review earnings data integration", priority: 1, status: "in_progress", created_at: new Date().toISOString() },
+                { id: "demo-2", title: "Set up Polymarket auto-scanner", priority: 1, status: "todo", created_at: new Date().toISOString() },
+                { id: "demo-3", title: "Document API endpoints", priority: 2, status: "todo", created_at: new Date().toISOString() },
+                { id: "demo-4", title: "Implement feedback learning loop", priority: 2, status: "in_progress", created_at: new Date().toISOString() },
+                { id: "demo-5", title: "Add TanStack Table", priority: 3, status: "done", created_at: new Date().toISOString() },
             ]);
         } finally {
             setLoading(false);
@@ -64,33 +103,137 @@ export default function PlannerPage() {
         fetchTasks();
     }, []);
 
+    const tasksByColumn = useMemo(() => {
+        return {
+            todo: tasks.filter((t) => t.status === "todo"),
+            in_progress: tasks.filter((t) => t.status === "in_progress"),
+            done: tasks.filter((t) => t.status === "done"),
+        };
+    }, [tasks]);
+
+    const findColumn = (id: string): ColumnId | null => {
+        // Check if id is a column id
+        if (["todo", "in_progress", "done"].includes(id)) {
+            return id as ColumnId;
+        }
+        // Find which column the task belongs to
+        const task = tasks.find((t) => t.id === id);
+        return task ? (task.status as ColumnId) : null;
+    };
+
+    const handleDragStart = (event: DragStartEvent) => {
+        const task = tasks.find((t) => t.id === event.active.id);
+        setActiveTask(task || null);
+    };
+
+    const handleDragOver = (event: DragOverEvent) => {
+        const { active, over } = event;
+        if (!over) return;
+
+        const activeId = active.id as string;
+        const overId = over.id as string;
+
+        const activeColumn = findColumn(activeId);
+        const overColumn = findColumn(overId);
+
+        if (!activeColumn || !overColumn || activeColumn === overColumn) {
+            return;
+        }
+
+        // Move task to new column
+        setTasks((prev) =>
+            prev.map((t) =>
+                t.id === activeId ? { ...t, status: overColumn } : t
+            )
+        );
+    };
+
+    const handleDragEnd = async (event: DragEndEvent) => {
+        const { active, over } = event;
+        setActiveTask(null);
+
+        if (!over) return;
+
+        const activeId = active.id as string;
+        const overId = over.id as string;
+
+        const activeColumn = findColumn(activeId);
+        const overColumn = findColumn(overId);
+
+        if (!activeColumn || !overColumn) return;
+
+        // If dropped on different column, update status
+        if (activeColumn !== overColumn) {
+            setTasks((prev) =>
+                prev.map((t) =>
+                    t.id === activeId ? { ...t, status: overColumn } : t
+                )
+            );
+        }
+
+        // Persist the change
+        const finalTask = tasks.find((t) => t.id === activeId);
+        if (finalTask) {
+            try {
+                await fetch(
+                    `http://localhost:8000/planner/task/${activeId}/status?status=${overColumn}`,
+                    {
+                        method: "PATCH",
+                        headers: { "X-API-Key": "dev-token-change-me" },
+                    }
+                );
+            } catch {
+                // Silently fail for demo
+            }
+        }
+
+        // Handle reordering within the same column
+        if (activeId !== overId && activeColumn === overColumn) {
+            const columnTasks = tasks.filter((t) => t.status === activeColumn);
+            const oldIndex = columnTasks.findIndex((t) => t.id === activeId);
+            const newIndex = columnTasks.findIndex((t) => t.id === overId);
+
+            if (oldIndex !== -1 && newIndex !== -1) {
+                const reordered = arrayMove(columnTasks, oldIndex, newIndex);
+                setTasks((prev) => {
+                    const otherTasks = prev.filter((t) => t.status !== activeColumn);
+                    return [...otherTasks, ...reordered];
+                });
+            }
+        }
+    };
+
     const addTask = async () => {
         if (!newTaskTitle.trim()) return;
         try {
-            await fetch(`http://localhost:8000/planner/task?title=${encodeURIComponent(newTaskTitle)}&priority=${newTaskPriority}`, {
-                method: "POST",
-                headers: { "X-API-Key": "dev-token-change-me" },
-            });
-            setNewTaskTitle("");
-            setShowAddDialog(false);
-            fetchTasks();
+            const res = await fetch(
+                `http://localhost:8000/planner/task?title=${encodeURIComponent(newTaskTitle)}&priority=${newTaskPriority}`,
+                {
+                    method: "POST",
+                    headers: { "X-API-Key": "dev-token-change-me" },
+                }
+            );
+            if (res.ok) {
+                setNewTaskTitle("");
+                setShowAddDialog(false);
+                fetchTasks();
+            }
         } catch {
             // Add locally for demo
-            setTasks([...tasks, {
-                id: Date.now().toString(),
-                title: newTaskTitle,
-                priority: newTaskPriority,
-                status: "todo",
-                created_at: new Date().toISOString(),
-            }]);
+            setTasks([
+                ...tasks,
+                {
+                    id: `task_${Date.now()}`,
+                    title: newTaskTitle,
+                    priority: newTaskPriority,
+                    status: "todo",
+                    created_at: new Date().toISOString(),
+                },
+            ]);
             setNewTaskTitle("");
             setShowAddDialog(false);
         }
     };
-
-    const todoTasks = tasks.filter((t) => t.status === "todo");
-    const inProgressTasks = tasks.filter((t) => t.status === "in_progress");
-    const doneTasks = tasks.filter((t) => t.status === "done");
 
     return (
         <div className="space-y-8">
@@ -102,7 +245,9 @@ export default function PlannerPage() {
                         <h1 className="text-4xl font-bold bg-gradient-to-r from-violet-400 via-purple-400 to-fuchsia-400 bg-clip-text text-transparent">
                             Planner
                         </h1>
-                        <p className="text-zinc-400 mt-2">Organize your projects and track progress</p>
+                        <p className="text-zinc-400 mt-2">
+                            Drag tasks between columns • {tasks.length} total tasks
+                        </p>
                     </div>
                     <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
                         <DialogTrigger asChild>
@@ -120,6 +265,7 @@ export default function PlannerPage() {
                                     placeholder="Task title..."
                                     value={newTaskTitle}
                                     onChange={(e) => setNewTaskTitle(e.target.value)}
+                                    onKeyDown={(e) => e.key === "Enter" && addTask()}
                                     className="bg-zinc-800 border-zinc-700"
                                 />
                                 <div className="flex gap-2">
@@ -129,9 +275,13 @@ export default function PlannerPage() {
                                             variant={newTaskPriority === p ? "default" : "outline"}
                                             size="sm"
                                             onClick={() => setNewTaskPriority(p)}
-                                            className={newTaskPriority === p ? `bg-gradient-to-r ${PRIORITY_CONFIG[p as keyof typeof PRIORITY_CONFIG].color}` : "border-zinc-700"}
+                                            className={
+                                                newTaskPriority === p
+                                                    ? PRIORITY_CONFIG[p as keyof typeof PRIORITY_CONFIG].color
+                                                    : "border-zinc-700"
+                                            }
                                         >
-                                            {PRIORITY_CONFIG[p as keyof typeof PRIORITY_CONFIG].label}
+                                            P{p}
                                         </Button>
                                     ))}
                                 </div>
@@ -140,7 +290,10 @@ export default function PlannerPage() {
                                 <DialogClose asChild>
                                     <Button variant="ghost">Cancel</Button>
                                 </DialogClose>
-                                <Button onClick={addTask} className="bg-gradient-to-r from-violet-500 to-purple-500">
+                                <Button
+                                    onClick={addTask}
+                                    className="bg-gradient-to-r from-violet-500 to-purple-500"
+                                >
                                     Add Task
                                 </Button>
                             </DialogFooter>
@@ -150,55 +303,122 @@ export default function PlannerPage() {
             </div>
 
             {/* Kanban Board */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <KanbanColumn title="📋 To Do" tasks={todoTasks} color="from-blue-500 to-cyan-500" />
-                <KanbanColumn title="⚡ In Progress" tasks={inProgressTasks} color="from-violet-500 to-purple-500" />
-                <KanbanColumn title="✅ Done" tasks={doneTasks} color="from-emerald-500 to-teal-500" />
-            </div>
+            <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragStart={handleDragStart}
+                onDragOver={handleDragOver}
+                onDragEnd={handleDragEnd}
+            >
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    {COLUMNS.map((column) => (
+                        <DroppableColumn
+                            key={column.id}
+                            column={column}
+                            tasks={tasksByColumn[column.id]}
+                        />
+                    ))}
+                </div>
+
+                <DragOverlay>
+                    {activeTask ? <TaskCard task={activeTask} isDragging /> : null}
+                </DragOverlay>
+            </DndContext>
         </div>
     );
 }
 
-function KanbanColumn({ title, tasks, color }: { title: string; tasks: Task[]; color: string }) {
+function DroppableColumn({
+    column,
+    tasks,
+}: {
+    column: { id: ColumnId; title: string; icon: string; color: string };
+    tasks: Task[];
+}) {
+    const { setNodeRef, isOver } = useDroppable({
+        id: column.id,
+    });
+
+    const taskIds = tasks.map((t) => t.id);
+
     return (
         <div className="space-y-4">
             <div className="flex items-center justify-between">
-                <h2 className={`text-lg font-semibold bg-gradient-to-r ${color} bg-clip-text text-transparent`}>
-                    {title}
+                <h2
+                    className={`text-lg font-semibold bg-gradient-to-r ${column.color} bg-clip-text text-transparent flex items-center gap-2`}
+                >
+                    <span>{column.icon}</span>
+                    {column.title}
                 </h2>
-                <span className="text-sm text-zinc-500">{tasks.length}</span>
+                <span className="text-sm text-zinc-500 bg-zinc-800 px-2.5 py-1 rounded-full">
+                    {tasks.length}
+                </span>
             </div>
-            <div className="space-y-3">
-                {tasks.length === 0 ? (
-                    <div className="bg-zinc-900/50 border border-zinc-800 border-dashed rounded-xl p-8 text-center">
-                        <p className="text-sm text-zinc-600">No tasks</p>
-                    </div>
-                ) : (
-                    tasks.map((task) => <TaskCard key={task.id} task={task} />)
-                )}
-            </div>
+
+            <SortableContext items={taskIds} strategy={verticalListSortingStrategy}>
+                <div
+                    ref={setNodeRef}
+                    className={`min-h-[200px] rounded-2xl p-3 space-y-3 transition-all ${isOver
+                            ? "bg-purple-500/10 border-2 border-purple-500/50"
+                            : "bg-zinc-900/30 border border-zinc-800 border-dashed"
+                        }`}
+                >
+                    {tasks.length === 0 ? (
+                        <div className="flex items-center justify-center h-[180px] text-zinc-600">
+                            <p className="text-sm">Drop tasks here</p>
+                        </div>
+                    ) : (
+                        tasks.map((task) => <SortableTaskCard key={task.id} task={task} />)
+                    )}
+                </div>
+            </SortableContext>
         </div>
     );
 }
 
-function TaskCard({ task }: { task: Task }) {
-    const config = PRIORITY_CONFIG[task.priority as keyof typeof PRIORITY_CONFIG];
+function SortableTaskCard({ task }: { task: Task }) {
+    const {
+        attributes,
+        listeners,
+        setNodeRef,
+        transform,
+        transition,
+        isDragging,
+    } = useSortable({ id: task.id });
+
+    const style = {
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.5 : 1,
+    };
 
     return (
-        <Card className="bg-zinc-900/80 backdrop-blur-sm border-zinc-800 hover:border-zinc-700 transition-all rounded-xl cursor-pointer group">
+        <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+            <TaskCard task={task} isDragging={isDragging} />
+        </div>
+    );
+}
+
+function TaskCard({ task, isDragging = false }: { task: Task; isDragging?: boolean }) {
+    const config = PRIORITY_CONFIG[task.priority as keyof typeof PRIORITY_CONFIG] || PRIORITY_CONFIG[2];
+
+    return (
+        <Card
+            className={`bg-zinc-900/80 backdrop-blur-sm border-zinc-800 rounded-xl cursor-grab active:cursor-grabbing transition-all ${isDragging
+                    ? "shadow-xl shadow-purple-500/20 scale-105 rotate-1 border-purple-500/50"
+                    : "hover:border-zinc-600"
+                }`}
+        >
             <CardContent className="p-4">
                 <div className="flex items-start gap-3">
-                    <span className={`shrink-0 text-xs px-2 py-1 rounded-full border ${config.bg}`}>
-                        P{task.priority}
+                    <span
+                        className={`shrink-0 text-xs px-2 py-1 rounded-full border ${config.color}`}
+                    >
+                        {config.label}
                     </span>
-                    <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-zinc-200 group-hover:text-white transition-colors">
-                            {task.title}
-                        </p>
-                        {task.category && (
-                            <span className="text-xs text-zinc-500">{task.category}</span>
-                        )}
-                    </div>
+                    <p className="text-sm font-medium text-zinc-200 leading-relaxed">
+                        {task.title}
+                    </p>
                 </div>
             </CardContent>
         </Card>

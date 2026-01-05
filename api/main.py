@@ -328,6 +328,24 @@ async def planner_create_task(
     )
 
 
+@app.patch("/planner/task/{task_id}/status")
+async def planner_update_status(
+    task_id: str,
+    status: str,
+    x_api_key: str = Header(None)
+):
+    """Update a task's status (for drag-and-drop Kanban)."""
+    verify_token(x_api_key)
+    
+    try:
+        from src.agents.planner import PlannerStore
+        store = PlannerStore()
+        store.update(task_id, status=status)
+        return {"success": True, "task_id": task_id, "status": status}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 # ============================================================================
 # Research Endpoints
 # ============================================================================
