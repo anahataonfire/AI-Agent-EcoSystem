@@ -5,101 +5,214 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
-interface Report {
+interface ResearchResult {
     id: string;
     query: string;
     markdown: string;
     grounding_score: number;
     evidence_ids: string[];
-    created_at: string;
 }
 
 export default function ResearchPage() {
     const [query, setQuery] = useState("");
     const [loading, setLoading] = useState(false);
-    const [report, setReport] = useState<Report | null>(null);
+    const [result, setResult] = useState<ResearchResult | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const [feedback, setFeedback] = useState<"positive" | "negative" | null>(null);
 
     const runResearch = async () => {
-        if (!query) return;
+        if (!query.trim()) return;
         setLoading(true);
+        setError(null);
+        setFeedback(null);
 
-        // TODO: Call API
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        try {
+            const res = await fetch("http://localhost:8000/research/run", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-API-Key": "dev-token-change-me",
+                },
+                body: JSON.stringify({ query, use_library: true }),
+            });
 
-        setReport({
-            id: Date.now().toString(),
-            query,
-            markdown: `# Research: ${query}\n\nThis is a placeholder report. Connect to the API to see real grounded research.\n\n## Key Findings\n\n- Finding 1 [EVID: ev_example1]\n- Finding 2 [EVID: ev_example2]\n\n## Conclusion\n\nMore research needed.`,
-            grounding_score: 85,
-            evidence_ids: ["ev_example1", "ev_example2"],
-            created_at: new Date().toISOString(),
-        });
-        setLoading(false);
+            if (!res.ok) throw new Error(`API error: ${res.status}`);
+            const data = await res.json();
+            setResult(data);
+        } catch (e: any) {
+            setError(e.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const submitFeedback = async (type: "positive" | "negative") => {
+        setFeedback(type);
+        if (result) {
+            try {
+                await fetch("http://localhost:8000/feedback", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "X-API-Key": "dev-token-change-me",
+                    },
+                    body: JSON.stringify({
+                        item_id: result.id,
+                        feedback_type: type,
+                    }),
+                });
+            } catch { }
+        }
     };
 
     return (
-        <div className="space-y-6">
-            <div>
-                <h1 className="text-3xl font-bold">Research</h1>
-                <p className="text-zinc-400 mt-1">Ask anything — get grounded answers with citations</p>
+        <div className="space-y-8">
+            {/* Header */}
+            <div className="relative">
+                <div className="absolute inset-0 bg-gradient-to-r from-blue-500/10 via-indigo-500/10 to-violet-500/10 rounded-2xl blur-xl" />
+                <div className="relative bg-zinc-900/80 backdrop-blur-sm border border-zinc-800 rounded-2xl p-6">
+                    <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-400 via-indigo-400 to-violet-400 bg-clip-text text-transparent">
+                        Research
+                    </h1>
+                    <p className="text-zinc-400 mt-2">Grounded answers backed by evidence — no hallucinations</p>
+                </div>
             </div>
 
-            <Card className="bg-zinc-900 border-zinc-800">
+            {/* Query Input */}
+            <Card className="bg-zinc-900/80 backdrop-blur-sm border-zinc-800 rounded-2xl">
                 <CardHeader>
-                    <CardTitle>New Research Query</CardTitle>
-                    <CardDescription>Your library will be cited as evidence</CardDescription>
+                    <CardTitle className="flex items-center gap-2">
+                        <span className="text-2xl">🔬</span>
+                        Research Query
+                    </CardTitle>
+                    <CardDescription>Ask a question — get a grounded, evidence-based answer</CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-3">
+                <CardContent className="space-y-4">
                     <Textarea
-                        placeholder="What would you like to research?"
+                        placeholder="e.g., What are the latest developments in transformer architectures?"
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
-                        className="bg-zinc-800 border-zinc-700 min-h-[100px]"
+                        className="bg-zinc-800/50 border-zinc-700 min-h-[100px] rounded-xl text-lg"
                     />
-                    <Button onClick={runResearch} disabled={loading || !query}>
-                        {loading ? "Researching..." : "Run Research"}
+                    <Button
+                        onClick={runResearch}
+                        disabled={loading || !query.trim()}
+                        className="w-full h-14 text-lg rounded-xl bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600"
+                    >
+                        {loading ? "⟳ Researching..." : "🔍 Run Research"}
                     </Button>
                 </CardContent>
             </Card>
 
-            {report && (
-                <Card className="bg-zinc-900 border-zinc-800">
-                    <CardHeader>
-                        <div className="flex items-center justify-between">
-                            <CardTitle>Report: {report.query}</CardTitle>
-                            <GroundingBadge score={report.grounding_score} />
-                        </div>
-                        <CardDescription>
-                            {report.evidence_ids.length} evidence sources • {new Date(report.created_at).toLocaleString()}
-                        </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                        <div className="prose prose-invert prose-sm max-w-none">
-                            <pre className="whitespace-pre-wrap text-sm bg-zinc-800 p-4 rounded-lg">
-                                {report.markdown}
-                            </pre>
-                        </div>
-                        <div className="flex gap-2 mt-4">
-                            <Button variant="outline" size="sm">👍 Useful</Button>
-                            <Button variant="outline" size="sm">👎 Not helpful</Button>
-                            <Button variant="outline" size="sm">📌 Save</Button>
-                        </div>
-                    </CardContent>
-                </Card>
+            {error && (
+                <div className="bg-red-950/30 border border-red-800/50 rounded-2xl p-6">
+                    <p className="text-red-400">❌ Error: {error}</p>
+                </div>
+            )}
+
+            {result && (
+                <>
+                    {/* Grounding Score */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <Card className="bg-zinc-900/80 backdrop-blur-sm border-zinc-800 rounded-2xl col-span-1">
+                            <CardContent className="p-6">
+                                <div className="flex items-center gap-4">
+                                    <div className="relative">
+                                        <svg className="w-20 h-20 transform -rotate-90">
+                                            <circle cx="40" cy="40" r="35" fill="none" stroke="#27272a" strokeWidth="8" />
+                                            <circle
+                                                cx="40"
+                                                cy="40"
+                                                r="35"
+                                                fill="none"
+                                                stroke="url(#gradient)"
+                                                strokeWidth="8"
+                                                strokeDasharray={`${(result.grounding_score / 100) * 220} 220`}
+                                                strokeLinecap="round"
+                                            />
+                                            <defs>
+                                                <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                                                    <stop offset="0%" stopColor="#3b82f6" />
+                                                    <stop offset="100%" stopColor="#8b5cf6" />
+                                                </linearGradient>
+                                            </defs>
+                                        </svg>
+                                        <span className="absolute inset-0 flex items-center justify-center text-2xl font-bold">
+                                            {result.grounding_score}%
+                                        </span>
+                                    </div>
+                                    <div>
+                                        <p className="font-semibold text-zinc-200">Grounding Score</p>
+                                        <p className="text-sm text-zinc-500">Based on {result.evidence_ids.length} evidence items</p>
+                                    </div>
+                                </div>
+                            </CardContent>
+                        </Card>
+
+                        <Card className="bg-zinc-900/80 backdrop-blur-sm border-zinc-800 rounded-2xl col-span-2">
+                            <CardContent className="p-6">
+                                <p className="text-sm text-zinc-500 mb-2">Evidence IDs Referenced:</p>
+                                <div className="flex flex-wrap gap-2">
+                                    {result.evidence_ids.slice(0, 10).map((id) => (
+                                        <span key={id} className="text-xs bg-zinc-800 px-2 py-1 rounded-full text-blue-400 font-mono">
+                                            {id.slice(0, 16)}...
+                                        </span>
+                                    ))}
+                                    {result.evidence_ids.length > 10 && (
+                                        <span className="text-xs text-zinc-500">+{result.evidence_ids.length - 10} more</span>
+                                    )}
+                                </div>
+                            </CardContent>
+                        </Card>
+                    </div>
+
+                    {/* Report */}
+                    <Card className="bg-zinc-900/80 backdrop-blur-sm border-zinc-800 rounded-2xl">
+                        <CardHeader className="border-b border-zinc-800">
+                            <div className="flex items-center justify-between">
+                                <CardTitle className="flex items-center gap-2">
+                                    <span>📄</span> Research Report
+                                </CardTitle>
+                                <div className="flex gap-2">
+                                    <Button
+                                        variant={feedback === "positive" ? "default" : "outline"}
+                                        size="sm"
+                                        onClick={() => submitFeedback("positive")}
+                                        className={feedback === "positive" ? "bg-green-500" : "border-zinc-700"}
+                                    >
+                                        👍 Helpful
+                                    </Button>
+                                    <Button
+                                        variant={feedback === "negative" ? "default" : "outline"}
+                                        size="sm"
+                                        onClick={() => submitFeedback("negative")}
+                                        className={feedback === "negative" ? "bg-red-500" : "border-zinc-700"}
+                                    >
+                                        👎 Not Useful
+                                    </Button>
+                                </div>
+                            </div>
+                        </CardHeader>
+                        <CardContent className="p-6">
+                            <div className="prose prose-invert prose-sm max-w-none">
+                                <pre className="whitespace-pre-wrap text-sm text-zinc-300 font-sans leading-relaxed bg-transparent p-0 m-0">
+                                    {result.markdown}
+                                </pre>
+                            </div>
+                        </CardContent>
+                    </Card>
+                </>
+            )}
+
+            {!loading && !result && (
+                <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-12 text-center">
+                    <div className="text-6xl mb-4">🔬</div>
+                    <h3 className="text-xl font-semibold text-zinc-200">Ask anything</h3>
+                    <p className="text-zinc-500 mt-2 max-w-md mx-auto">
+                        Your questions are answered using only verified evidence from your library — no AI hallucinations.
+                    </p>
+                </div>
             )}
         </div>
-    );
-}
-
-function GroundingBadge({ score }: { score: number }) {
-    const color =
-        score >= 80 ? "bg-green-500/20 text-green-400" :
-            score >= 50 ? "bg-yellow-500/20 text-yellow-400" :
-                "bg-red-500/20 text-red-400";
-
-    return (
-        <span className={`px-2 py-1 rounded text-sm font-medium ${color}`}>
-            Grounding: {score}%
-        </span>
     );
 }

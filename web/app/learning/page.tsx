@@ -48,88 +48,95 @@ export default function LearningPage() {
         ? Object.entries(summary.categories).sort((a, b) => b[1] - a[1])
         : [];
 
+    const acceptanceRate = summary?.patterns
+        ? Math.round(
+            (summary.patterns.filter((p) => p.outcome === "accepted").length /
+                Math.max(summary.patterns.length, 1)) *
+            100
+        )
+        : 0;
+
     return (
-        <div className="space-y-6">
-            <div className="flex items-center justify-between">
-                <div>
-                    <h1 className="text-3xl font-bold">📈 Learning</h1>
-                    <p className="text-zinc-400 mt-1">How the system adapts to your preferences</p>
+        <div className="space-y-8">
+            {/* Header */}
+            <div className="relative">
+                <div className="absolute inset-0 bg-gradient-to-r from-amber-500/10 via-yellow-500/10 to-lime-500/10 rounded-2xl blur-xl" />
+                <div className="relative bg-zinc-900/80 backdrop-blur-sm border border-zinc-800 rounded-2xl p-6 flex items-center justify-between">
+                    <div>
+                        <h1 className="text-4xl font-bold bg-gradient-to-r from-amber-400 via-yellow-400 to-lime-400 bg-clip-text text-transparent">
+                            Learning
+                        </h1>
+                        <p className="text-zinc-400 mt-2">How the system adapts to your preferences</p>
+                    </div>
+                    <Button
+                        variant="outline"
+                        onClick={fetchSummary}
+                        disabled={loading}
+                        className="rounded-xl border-zinc-700"
+                    >
+                        {loading ? "⟳ Loading..." : "↻ Refresh"}
+                    </Button>
                 </div>
-                <Button variant="outline" onClick={fetchSummary} disabled={loading}>
-                    {loading ? "Loading..." : "Refresh"}
-                </Button>
             </div>
 
             {error && (
-                <Card className="bg-yellow-950/50 border-yellow-800">
-                    <CardContent className="p-4">
-                        <p className="text-yellow-400">⚠️ Error: {error}</p>
-                    </CardContent>
-                </Card>
+                <div className="bg-yellow-950/30 border border-yellow-800/50 rounded-2xl p-4">
+                    <p className="text-yellow-400">⚠️ {error}</p>
+                </div>
             )}
 
+            {/* Stats Grid */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <Card className="bg-zinc-900 border-zinc-800">
-                    <CardHeader>
-                        <CardTitle>Feedback Given</CardTitle>
-                        <CardDescription>Your input shapes the system</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                        <div className="text-3xl font-bold">{summary?.feedback_count || 0}</div>
-                        <p className="text-sm text-zinc-500">total feedback signals</p>
-                    </CardContent>
-                </Card>
-
-                <Card className="bg-zinc-900 border-zinc-800">
-                    <CardHeader>
-                        <CardTitle>Categories Learned</CardTitle>
-                        <CardDescription>Topics you engage with</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                        <div className="text-3xl font-bold">{sortedCategories.length}</div>
-                        <p className="text-sm text-zinc-500">unique categories</p>
-                    </CardContent>
-                </Card>
-
-                <Card className="bg-zinc-900 border-zinc-800">
-                    <CardHeader>
-                        <CardTitle>Acceptance Rate</CardTitle>
-                        <CardDescription>Suggestions you approved</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                        <div className="text-3xl font-bold">
-                            {summary?.patterns
-                                ? Math.round(
-                                    (summary.patterns.filter((p) => p.outcome === "accepted").length /
-                                        summary.patterns.length) *
-                                    100
-                                ) || 0
-                                : 0}%
-                        </div>
-                        <p className="text-sm text-zinc-500">of suggestions accepted</p>
-                    </CardContent>
-                </Card>
+                <StatCard
+                    icon="📊"
+                    label="Feedback Signals"
+                    value={summary?.feedback_count?.toString() || "0"}
+                    description="Total interactions"
+                    color="from-amber-500 to-yellow-500"
+                />
+                <StatCard
+                    icon="🏷️"
+                    label="Categories Learned"
+                    value={sortedCategories.length.toString()}
+                    description="Unique topics"
+                    color="from-yellow-500 to-lime-500"
+                />
+                <StatCard
+                    icon="✅"
+                    label="Acceptance Rate"
+                    value={`${acceptanceRate}%`}
+                    description="Suggestions approved"
+                    color="from-lime-500 to-green-500"
+                />
             </div>
 
-            <Card className="bg-zinc-900 border-zinc-800">
+            {/* Category Preferences */}
+            <Card className="bg-zinc-900/80 backdrop-blur-sm border-zinc-800 rounded-2xl">
                 <CardHeader>
-                    <CardTitle>🏷️ Category Preferences</CardTitle>
-                    <CardDescription>Topics you've expressed interest in</CardDescription>
+                    <CardTitle className="flex items-center gap-2">
+                        <span>🧠</span> Category Preferences
+                    </CardTitle>
+                    <CardDescription>Topics you've shown interest in</CardDescription>
                 </CardHeader>
                 <CardContent>
                     {sortedCategories.length === 0 ? (
-                        <p className="text-zinc-500">No category preferences recorded yet.</p>
+                        <div className="py-8 text-center">
+                            <p className="text-zinc-500">No category preferences recorded yet.</p>
+                        </div>
                     ) : (
-                        <div className="flex flex-wrap gap-2">
-                            {sortedCategories.map(([category, count]) => (
+                        <div className="flex flex-wrap gap-3">
+                            {sortedCategories.map(([category, count], i) => (
                                 <div
                                     key={category}
-                                    className="bg-blue-500/20 text-blue-400 px-3 py-1.5 rounded-lg text-sm flex items-center gap-2"
+                                    className={`relative group ${i < 3 ? "text-lg" : "text-base"}`}
                                 >
-                                    <span>{category}</span>
-                                    <span className="bg-blue-500/30 px-1.5 py-0.5 rounded text-xs">
-                                        {count}
-                                    </span>
+                                    <div className="absolute inset-0 bg-gradient-to-r from-amber-500/20 to-lime-500/20 rounded-xl blur-md opacity-0 group-hover:opacity-100 transition-opacity" />
+                                    <div className="relative bg-zinc-800 border border-zinc-700 hover:border-amber-500/50 px-4 py-2 rounded-xl flex items-center gap-2 transition-colors">
+                                        <span className={`${i < 3 ? "text-amber-400" : "text-zinc-300"}`}>{category}</span>
+                                        <span className="bg-amber-500/20 text-amber-400 text-xs px-2 py-0.5 rounded-full">
+                                            {count}
+                                        </span>
+                                    </div>
                                 </div>
                             ))}
                         </div>
@@ -137,27 +144,64 @@ export default function LearningPage() {
                 </CardContent>
             </Card>
 
-            <Card className="bg-zinc-900 border-zinc-800">
+            {/* Learning Timeline */}
+            <Card className="bg-zinc-900/80 backdrop-blur-sm border-zinc-800 rounded-2xl">
                 <CardHeader>
-                    <CardTitle>📜 Recent Feedback</CardTitle>
-                    <CardDescription>Your recent interactions and decisions</CardDescription>
+                    <CardTitle className="flex items-center gap-2">
+                        <span>📜</span> Learning Timeline
+                    </CardTitle>
+                    <CardDescription>Recent feedback and decisions</CardDescription>
                 </CardHeader>
                 <CardContent>
                     {!summary?.patterns || summary.patterns.length === 0 ? (
-                        <div className="py-8 text-center">
-                            <div className="text-4xl mb-4">🧠</div>
-                            <h3 className="text-lg font-medium">No feedback yet</h3>
-                            <p className="text-zinc-500 mt-2">
-                                Accept or reject category suggestions to teach the system.
+                        <div className="py-12 text-center">
+                            <div className="text-6xl mb-4">🧠</div>
+                            <h3 className="text-xl font-semibold text-zinc-200">No feedback yet</h3>
+                            <p className="text-zinc-500 mt-2 max-w-md mx-auto">
+                                Accept or reject suggestions to help the system learn your preferences.
                             </p>
                         </div>
                     ) : (
-                        <div className="space-y-2 max-h-80 overflow-y-auto">
+                        <div className="space-y-3 max-h-96 overflow-y-auto pr-2">
                             {summary.patterns.map((pattern, i) => (
                                 <FeedbackRow key={i} pattern={pattern} />
                             ))}
                         </div>
                     )}
+                </CardContent>
+            </Card>
+        </div>
+    );
+}
+
+function StatCard({
+    icon,
+    label,
+    value,
+    description,
+    color,
+}: {
+    icon: string;
+    label: string;
+    value: string;
+    description: string;
+    color: string;
+}) {
+    return (
+        <div className="group relative">
+            <div className={`absolute inset-0 bg-gradient-to-r ${color} rounded-2xl opacity-0 group-hover:opacity-20 transition-opacity blur-xl`} />
+            <Card className="relative bg-zinc-900/80 backdrop-blur-sm border-zinc-800 rounded-2xl h-full">
+                <CardContent className="p-6">
+                    <div className="flex items-center gap-4">
+                        <span className="text-3xl">{icon}</span>
+                        <div>
+                            <p className={`text-3xl font-bold bg-gradient-to-r ${color} bg-clip-text text-transparent`}>
+                                {value}
+                            </p>
+                            <p className="text-sm text-zinc-400">{label}</p>
+                            <p className="text-xs text-zinc-600">{description}</p>
+                        </div>
+                    </div>
                 </CardContent>
             </Card>
         </div>
@@ -173,15 +217,20 @@ function FeedbackRow({ pattern }: { pattern: LearningPattern }) {
     const isAccepted = pattern.outcome === "accepted";
 
     return (
-        <div className="flex items-center gap-3 p-2 bg-zinc-800 rounded-lg">
-            <span className={isAccepted ? "text-green-400" : "text-red-400"}>
-                {isAccepted ? "✓" : "✗"}
-            </span>
-            <span className="text-xs bg-zinc-700 px-2 py-1 rounded">{pattern.type}</span>
-            <span className="flex-1 text-sm truncate">
-                {context.suggested || pattern.context.slice(0, 50)}
-            </span>
-            <span className="text-xs text-zinc-500">
+        <div className="flex items-center gap-4 p-4 bg-zinc-800/50 rounded-xl hover:bg-zinc-800 transition-colors">
+            <div className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${isAccepted ? "bg-green-500/20" : "bg-red-500/20"
+                }`}>
+                <span className={isAccepted ? "text-green-400" : "text-red-400"}>
+                    {isAccepted ? "✓" : "✗"}
+                </span>
+            </div>
+            <div className="flex-1 min-w-0">
+                <p className="font-medium text-zinc-200 truncate">
+                    {context.suggested || pattern.context.slice(0, 50)}
+                </p>
+                <p className="text-xs text-zinc-500">{pattern.type}</p>
+            </div>
+            <span className="text-xs text-zinc-600 shrink-0">
                 {new Date(pattern.created_at).toLocaleDateString()}
             </span>
         </div>

@@ -3,91 +3,209 @@
 import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+
+interface InboxEntry {
+    id: string;
+    type: "link" | "text" | "note";
+    content: string;
+    status: "pending" | "processed";
+    created_at: string;
+}
 
 export default function InboxPage() {
-    const [url, setUrl] = useState("");
-    const [text, setText] = useState("");
-    const [pending, setPending] = useState<any[]>([]);
+    const [activeTab, setActiveTab] = useState<"link" | "text">("link");
+    const [linkUrl, setLinkUrl] = useState("");
+    const [textContent, setTextContent] = useState("");
+    const [notes, setNotes] = useState("");
+    const [loading, setLoading] = useState(false);
+    const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+    const [recentItems, setRecentItems] = useState<InboxEntry[]>([]);
 
-    const addLink = async () => {
-        if (!url) return;
-        // TODO: Call API
-        setPending([...pending, { type: "link", content: url, id: Date.now() }]);
-        setUrl("");
-    };
+    const submitToInbox = async () => {
+        setLoading(true);
+        setMessage(null);
 
-    const addNote = async () => {
-        if (!text) return;
-        // TODO: Call API
-        setPending([...pending, { type: "note", content: text, id: Date.now() }]);
-        setText("");
+        try {
+            const body = activeTab === "link"
+                ? { url: linkUrl, notes }
+                : { text: textContent, notes };
+
+            const res = await fetch("http://localhost:8000/inbox/add", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-API-Key": "dev-token-change-me",
+                },
+                body: JSON.stringify(body),
+            });
+
+            if (!res.ok) throw new Error(`API error: ${res.status}`);
+
+            const data = await res.json();
+            setMessage({ type: "success", text: `Added to inbox: ${data.id}` });
+            setLinkUrl("");
+            setTextContent("");
+            setNotes("");
+
+            // Add to recent items
+            setRecentItems([
+                {
+                    id: data.id,
+                    type: activeTab,
+                    content: activeTab === "link" ? linkUrl : textContent.slice(0, 100),
+                    status: "pending",
+                    created_at: new Date().toISOString(),
+                },
+                ...recentItems.slice(0, 4),
+            ]);
+        } catch (e: any) {
+            setMessage({ type: "error", text: e.message });
+        } finally {
+            setLoading(false);
+        }
     };
 
     return (
-        <div className="space-y-6">
-            <div>
-                <h1 className="text-3xl font-bold">Inbox</h1>
-                <p className="text-zinc-400 mt-1">Drop links, paste text, or add quick notes</p>
+        <div className="space-y-8">
+            {/* Header */}
+            <div className="relative">
+                <div className="absolute inset-0 bg-gradient-to-r from-sky-500/10 via-blue-500/10 to-indigo-500/10 rounded-2xl blur-xl" />
+                <div className="relative bg-zinc-900/80 backdrop-blur-sm border border-zinc-800 rounded-2xl p-6">
+                    <h1 className="text-4xl font-bold bg-gradient-to-r from-sky-400 via-blue-400 to-indigo-400 bg-clip-text text-transparent">
+                        Inbox
+                    </h1>
+                    <p className="text-zinc-400 mt-2">Add links and notes to your knowledge base</p>
+                </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <Card className="bg-zinc-900 border-zinc-800">
-                    <CardHeader>
-                        <CardTitle>Add Link</CardTitle>
-                        <CardDescription>Paste a URL to summarize and curate</CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-3">
-                        <Input
-                            placeholder="https://..."
-                            value={url}
-                            onChange={(e) => setUrl(e.target.value)}
-                            className="bg-zinc-800 border-zinc-700"
-                        />
-                        <Button onClick={addLink} className="w-full">
-                            Add to Inbox
+            {/* Add Content Form */}
+            <Card className="bg-zinc-900/80 backdrop-blur-sm border-zinc-800 rounded-2xl">
+                <CardHeader className="border-b border-zinc-800">
+                    <div className="flex items-center gap-3">
+                        <Button
+                            variant={activeTab === "link" ? "default" : "outline"}
+                            onClick={() => setActiveTab("link")}
+                            className={`rounded-xl ${activeTab === "link"
+                                    ? "bg-gradient-to-r from-sky-500 to-blue-500"
+                                    : "border-zinc-700"
+                                }`}
+                        >
+                            🔗 Add Link
                         </Button>
-                    </CardContent>
-                </Card>
-
-                <Card className="bg-zinc-900 border-zinc-800">
-                    <CardHeader>
-                        <CardTitle>Quick Note</CardTitle>
-                        <CardDescription>Capture ideas, text, or thoughts</CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-3">
-                        <Textarea
-                            placeholder="Type or paste anything..."
-                            value={text}
-                            onChange={(e) => setText(e.target.value)}
-                            className="bg-zinc-800 border-zinc-700 min-h-[100px]"
-                        />
-                        <Button onClick={addNote} className="w-full">
-                            Add Note
+                        <Button
+                            variant={activeTab === "text" ? "default" : "outline"}
+                            onClick={() => setActiveTab("text")}
+                            className={`rounded-xl ${activeTab === "text"
+                                    ? "bg-gradient-to-r from-sky-500 to-blue-500"
+                                    : "border-zinc-700"
+                                }`}
+                        >
+                            📝 Add Text
                         </Button>
-                    </CardContent>
-                </Card>
-            </div>
+                    </div>
+                </CardHeader>
+                <CardContent className="p-6 space-y-4">
+                    {activeTab === "link" ? (
+                        <div className="space-y-4">
+                            <div>
+                                <label className="text-sm text-zinc-400 mb-2 block">URL</label>
+                                <Input
+                                    placeholder="https://example.com/article"
+                                    value={linkUrl}
+                                    onChange={(e) => setLinkUrl(e.target.value)}
+                                    className="bg-zinc-800/50 border-zinc-700 rounded-xl h-12"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-sm text-zinc-400 mb-2 block">Notes (optional)</label>
+                                <Textarea
+                                    placeholder="Why is this interesting? What should I do with it?"
+                                    value={notes}
+                                    onChange={(e) => setNotes(e.target.value)}
+                                    className="bg-zinc-800/50 border-zinc-700 rounded-xl min-h-[80px]"
+                                />
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="space-y-4">
+                            <div>
+                                <label className="text-sm text-zinc-400 mb-2 block">Content</label>
+                                <Textarea
+                                    placeholder="Paste or type content to save..."
+                                    value={textContent}
+                                    onChange={(e) => setTextContent(e.target.value)}
+                                    className="bg-zinc-800/50 border-zinc-700 rounded-xl min-h-[120px]"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-sm text-zinc-400 mb-2 block">Notes (optional)</label>
+                                <Input
+                                    placeholder="Quick note about this content"
+                                    value={notes}
+                                    onChange={(e) => setNotes(e.target.value)}
+                                    className="bg-zinc-800/50 border-zinc-700 rounded-xl"
+                                />
+                            </div>
+                        </div>
+                    )}
 
-            <Card className="bg-zinc-900 border-zinc-800">
+                    <Button
+                        onClick={submitToInbox}
+                        disabled={loading || (activeTab === "link" ? !linkUrl : !textContent)}
+                        className="w-full h-14 text-lg rounded-xl bg-gradient-to-r from-sky-500 to-blue-500 hover:from-sky-600 hover:to-blue-600"
+                    >
+                        {loading ? "⟳ Adding..." : "📥 Add to Inbox"}
+                    </Button>
+
+                    {message && (
+                        <div className={`p-4 rounded-xl ${message.type === "success"
+                                ? "bg-green-950/30 border border-green-800/50 text-green-400"
+                                : "bg-red-950/30 border border-red-800/50 text-red-400"
+                            }`}>
+                            {message.type === "success" ? "✓" : "✗"} {message.text}
+                        </div>
+                    )}
+                </CardContent>
+            </Card>
+
+            {/* Recent Additions */}
+            <Card className="bg-zinc-900/80 backdrop-blur-sm border-zinc-800 rounded-2xl">
                 <CardHeader>
-                    <CardTitle>Pending Items ({pending.length})</CardTitle>
-                    <CardDescription>Items waiting to be processed</CardDescription>
+                    <CardTitle className="flex items-center gap-2">
+                        <span>📬</span> Recent Additions
+                    </CardTitle>
+                    <CardDescription>Items added in this session</CardDescription>
                 </CardHeader>
                 <CardContent>
-                    {pending.length === 0 ? (
-                        <p className="text-zinc-500 text-sm">No pending items. Add something above!</p>
+                    {recentItems.length === 0 ? (
+                        <div className="py-8 text-center">
+                            <div className="text-4xl mb-3">📭</div>
+                            <p className="text-zinc-500">No items added yet this session</p>
+                        </div>
                     ) : (
-                        <div className="space-y-2">
-                            {pending.map((item) => (
+                        <div className="space-y-3">
+                            {recentItems.map((item) => (
                                 <div
                                     key={item.id}
-                                    className="flex items-center gap-3 p-3 bg-zinc-800 rounded-lg"
+                                    className="flex items-center gap-4 p-4 bg-zinc-800/50 rounded-xl"
                                 >
-                                    <span>{item.type === "link" ? "🔗" : "📝"}</span>
-                                    <span className="flex-1 text-sm truncate">{item.content}</span>
-                                    <span className="text-xs text-zinc-500">Processing...</span>
+                                    <span className="text-2xl">
+                                        {item.type === "link" ? "🔗" : "📝"}
+                                    </span>
+                                    <div className="flex-1 min-w-0">
+                                        <p className="text-sm font-medium text-zinc-200 truncate">
+                                            {item.content}
+                                        </p>
+                                        <p className="text-xs text-zinc-500">{item.id}</p>
+                                    </div>
+                                    <span className={`text-xs px-2 py-1 rounded-full ${item.status === "pending"
+                                            ? "bg-yellow-500/20 text-yellow-400"
+                                            : "bg-green-500/20 text-green-400"
+                                        }`}>
+                                        {item.status}
+                                    </span>
                                 </div>
                             ))}
                         </div>

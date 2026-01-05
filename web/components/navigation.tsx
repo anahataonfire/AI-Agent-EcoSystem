@@ -2,53 +2,86 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { cn } from "@/lib/utils";
+import Image from "next/image";
 
 const navItems = [
     { href: "/", label: "Dashboard", icon: "🏠" },
-    { href: "/mission", label: "Mission Control", icon: "🛰️" },
-    { href: "/polymarket", label: "Polymarket Scanner", icon: "🎯" },
-    { href: "/hangar", label: "The Hangar", icon: "🛠️" },
-    { href: "/architecture", label: "Architecture", icon: "🏗️" },
     { href: "/inbox", label: "Inbox", icon: "📥" },
-    { href: "/library", label: "Content Library", icon: "📚" },
+    { href: "/library", label: "Library", icon: "📚" },
     { href: "/planner", label: "Planner", icon: "📋" },
     { href: "/research", label: "Research", icon: "🔬" },
-    { href: "/advisor", label: "Advisor Chat", icon: "🧠" },
     { href: "/learning", label: "Learning", icon: "📈" },
+    { href: "/mission", label: "Mission Control", icon: "🚀" },
+    { href: "/polymarket", label: "Polymarket", icon: "🎯" },
+    { href: "/hangar", label: "The Hangar", icon: "🛫" },
+    { href: "/architecture", label: "Architecture", icon: "🏗️" },
+    { href: "/advisor", label: "Advisor", icon: "🧠" },
 ];
 
 export function Navigation() {
     const pathname = usePathname();
 
     return (
-        <nav className="w-56 border-r border-zinc-800 bg-zinc-900/50 p-4 flex flex-col gap-1">
-            <div className="mb-6">
-                <h1 className="text-xl font-bold text-zinc-50">Valhalla V3</h1>
-                <p className="text-xs text-zinc-500">Personal Intelligence</p>
-            </div>
-
-            {navItems.map((item) => (
-                <Link
-                    key={item.href}
-                    href={item.href}
-                    className={cn(
-                        "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
-                        pathname === item.href
-                            ? "bg-zinc-800 text-zinc-50"
-                            : "text-zinc-400 hover:text-zinc-50 hover:bg-zinc-800/50"
-                    )}
-                >
-                    <span>{item.icon}</span>
-                    <span>{item.label}</span>
+        <aside className="w-64 bg-zinc-900/80 backdrop-blur-xl border-r border-zinc-800 flex flex-col fixed inset-y-0 left-0 z-50">
+            {/* Brand Header */}
+            <div className="p-6 border-b border-zinc-800">
+                <Link href="/" className="flex items-center gap-3 group">
+                    <div className="relative">
+                        <div className="absolute inset-0 bg-gradient-to-r from-purple-500 to-cyan-500 rounded-xl blur-md opacity-50 group-hover:opacity-75 transition-opacity" />
+                        <div className="relative w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500/20 to-cyan-500/20 border border-zinc-700 flex items-center justify-center overflow-hidden">
+                            <Image
+                                src="/logo.png"
+                                alt="DTL"
+                                width={32}
+                                height={32}
+                                className="object-contain"
+                            />
+                        </div>
+                    </div>
+                    <div>
+                        <h1 className="font-bold text-lg bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
+                            DTL
+                        </h1>
+                        <p className="text-[10px] text-zinc-500 uppercase tracking-wider">
+                            Personal Intelligence
+                        </p>
+                    </div>
                 </Link>
-            ))}
-
-            <div className="mt-auto pt-4 border-t border-zinc-800">
-                <div className="px-3 py-2 text-xs text-zinc-500">
-                    v3.0 • Grounded AI
-                </div>
             </div>
-        </nav>
+
+            {/* Navigation Links */}
+            <nav className="flex-1 overflow-y-auto py-4 px-3">
+                <div className="space-y-1">
+                    {navItems.map((item) => {
+                        const isActive = pathname === item.href;
+                        return (
+                            <Link
+                                key={item.href}
+                                href={item.href}
+                                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all group ${isActive
+                                        ? "bg-gradient-to-r from-purple-500/20 to-blue-500/20 border border-purple-500/30 text-white"
+                                        : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/50"
+                                    }`}
+                            >
+                                <span className="text-lg group-hover:scale-110 transition-transform">{item.icon}</span>
+                                <span className="text-sm font-medium">{item.label}</span>
+                                {isActive && (
+                                    <div className="ml-auto w-1.5 h-1.5 rounded-full bg-gradient-to-r from-purple-400 to-cyan-400" />
+                                )}
+                            </Link>
+                        );
+                    })}
+                </div>
+            </nav>
+
+            {/* Footer */}
+            <div className="p-4 border-t border-zinc-800">
+                <div className="flex items-center gap-2 text-xs text-zinc-600">
+                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                    <span>System Online</span>
+                </div>
+                <p className="text-[10px] text-zinc-700 mt-1">v3.0.0 • DTL Platform</p>
+            </div>
+        </aside>
     );
 }
