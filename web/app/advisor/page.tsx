@@ -12,16 +12,21 @@ interface Message {
 }
 
 export default function AdvisorPage() {
-    const [messages, setMessages] = useState<Message[]>([
-        {
+    const [messages, setMessages] = useState<Message[]>([]);
+    const [input, setInput] = useState("");
+    const [loading, setLoading] = useState(false);
+    const [mounted, setMounted] = useState(false);
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+
+    // Initialize on client only to avoid hydration mismatch
+    useEffect(() => {
+        setMounted(true);
+        setMessages([{
             role: "advisor",
             content: "Hello! I'm your personal AI advisor. I can help you categorize content, suggest priorities, and learn your preferences over time. What would you like to discuss?",
             timestamp: new Date().toISOString(),
-        },
-    ]);
-    const [input, setInput] = useState("");
-    const [loading, setLoading] = useState(false);
-    const messagesEndRef = useRef<HTMLDivElement>(null);
+        }]);
+    }, []);
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -128,13 +133,13 @@ function MessageBubble({ message }: { message: Message }) {
                 )}
                 <div
                     className={`p-4 rounded-2xl ${isUser
-                            ? "bg-gradient-to-r from-blue-500 to-indigo-500 text-white"
-                            : "bg-zinc-800 text-zinc-100"
+                        ? "bg-gradient-to-r from-blue-500 to-indigo-500 text-white"
+                        : "bg-zinc-800 text-zinc-100"
                         }`}
                 >
                     <p className="text-sm whitespace-pre-wrap leading-relaxed">{message.content}</p>
                     <p className="text-xs opacity-50 mt-2">
-                        {new Date(message.timestamp).toLocaleTimeString()}
+                        {message.timestamp ? new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
                     </p>
                 </div>
                 {isUser && (
