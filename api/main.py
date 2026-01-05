@@ -362,5 +362,135 @@ async def learning_summary(x_api_key: str = Header(None)):
 
 
 # ============================================================================
+# Polymarket Scanner Endpoints
+# ============================================================================
+
+class PolymarketOpportunity(BaseModel):
+    """Polymarket opportunity."""
+    market_id: str
+    question: str
+    hours_remaining: float
+    yes_price: float
+    no_price: float
+    liquidity: float
+    certainty_side: str
+    certainty_pct: float
+    apr_estimate: float
+    event_slug: str
+    market_url: str
+
+
+@app.get("/polymarket/opportunities", response_model=List[PolymarketOpportunity])
+async def polymarket_opportunities(
+    max_hours: float = 4.0,
+    min_certainty: float = 0.95,
+    min_liquidity: float = 100.0,
+    x_api_key: str = Header(None)
+):
+    """Scan Polymarket for high-certainty opportunities."""
+    verify_token(x_api_key)
+    
+    try:
+        from src.polymarket_scanner import CertaintyScanner
+        
+        scanner = CertaintyScanner()
+        opportunities = scanner.scan(
+            max_hours=max_hours,
+            min_certainty=min_certainty,
+            min_liquidity=min_liquidity
+        )
+        
+        return [
+            PolymarketOpportunity(
+                market_id=opp.market_id,
+                question=opp.question,
+                hours_remaining=opp.hours_remaining,
+                yes_price=opp.yes_price,
+                no_price=opp.no_price,
+                liquidity=opp.liquidity,
+                certainty_side=opp.certainty_side,
+                certainty_pct=opp.certainty_pct,
+                apr_estimate=opp.apr_estimate,
+                event_slug=opp.event_slug,
+                market_url=opp.market_url,
+            )
+            for opp in opportunities
+        ]
+    except Exception as e:
+        # Return empty list on error (frontend handles this)
+        print(f"Polymarket scan error: {e}")
+        return []
+
+
+# ============================================================================
+# Evidence Browser Endpoints
+# ============================================================================
+
+class EvidenceItem(BaseModel):
+    """Evidence store item."""
+    evidence_id: str
+    payload: Dict[str, Any]
+    metadata: Dict[str, Any]
+    created_at: str
+    lifecycle: str
+
+
+@app.get("/evidence/browse", response_model=List[EvidenceItem])
+async def evidence_browse(limit: int = 50, x_api_key: str = Header(None)):
+    """Browse evidence store items."""
+    verify_token(x_api_key)
+    
+    try:
+        from src.core.evidence_store import EvidenceStore
+        
+        store = EvidenceStore()
+        ids = store.list_ids()[:limit]
+        
+        items = []
+        for eid in ids:
+            entry = store.get_with_metadata(eid)
+            if entry:
+                items.append(EvidenceItem(
+                    evidence_id=eid,
+                    payload=entry.get("payload", {}),
+                    metadata=entry.get("metadata", {}),
+                    created_at=entry.get("created_at", ""),
+                    lifecycle=entry.get("lifecycle", "active"),
+                ))
+        return items
+    except Exception as e:
+        print(f"Evidence browse error: {e}")
+        return []
+
+
+@app.get("/evidence/{evidence_id}", response_model=EvidenceItem)
+async def evidence_get(evidence_id: str, x_api_key: str = Header(None)):
+    """Get a specific evidence item."""
+    verify_token(x_api_key)
+    
+    try:
+        from src.core.evidence_store import EvidenceStore
+        
+        store = EvidenceStore()
+        entry = store.get_with_metadata(evidence_id)
+        
+        if not entry:
+            raise HTTPException(status_code=404, detail="Evidence not found")
+        
+        return EvidenceItem(
+            evidence_id=evidence_id,
+            payload=entry.get("payload", {}),
+            metadata=entry.get("metadata", {}),
+            created_at=entry.get("created_at", ""),
+            lifecycle=entry.get("lifecycle", "active"),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
 # Run with: uvicorn api.main:app --reload
 # ============================================================================
+
