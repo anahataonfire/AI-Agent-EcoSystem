@@ -217,16 +217,25 @@ function InteractiveContentCard({ item, onUpdate }: { item: ContentItem; onUpdat
         onUpdate();
     };
 
+    const [plannerMessage, setPlannerMessage] = useState<string | null>(null);
+
     const handleAddToPlanner = async () => {
         setAddingToPlanner(true);
+        setPlannerMessage(null);
         try {
-            await fetch("http://localhost:8000/planner/task?title=" + encodeURIComponent(`Review: ${item.title}`), {
+            const res = await fetch("http://localhost:8000/planner/task?title=" + encodeURIComponent(`Review: ${item.title}`), {
                 method: "POST",
                 headers: { "X-API-Key": "dev-token-change-me" },
             });
-            // Show success feedback
+            if (res.ok) {
+                setPlannerMessage("✓ Added to planner!");
+                setTimeout(() => setPlannerMessage(null), 3000);
+            } else {
+                setPlannerMessage("✗ Failed to add");
+            }
         } catch (e) {
             console.error("Failed to add to planner:", e);
+            setPlannerMessage("✗ Error adding to planner");
         } finally {
             setAddingToPlanner(false);
         }
@@ -324,11 +333,16 @@ function InteractiveContentCard({ item, onUpdate }: { item: ContentItem; onUpdat
                         <Button
                             variant="ghost"
                             size="sm"
-                            className="flex-1 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            className={`flex-1 transition-all ${plannerMessage?.includes("✓")
+                                    ? "text-green-400 bg-green-500/10"
+                                    : plannerMessage?.includes("✗")
+                                        ? "text-red-400 bg-red-500/10"
+                                        : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                                }`}
                             onClick={handleAddToPlanner}
                             disabled={addingToPlanner}
                         >
-                            {addingToPlanner ? "⟳ Adding..." : "📋 Add to Planner"}
+                            {plannerMessage || (addingToPlanner ? "⟳ Adding..." : "📋 Add to Planner")}
                         </Button>
                     </div>
                 </CardContent>
@@ -352,8 +366,8 @@ function EvidenceCard({ item }: { item: EvidenceItem }) {
                             {title}
                         </CardTitle>
                         <span className={`shrink-0 text-xs px-2.5 py-1 rounded-full ${item.lifecycle === "active"
-                                ? "bg-green-500/20 text-green-400 border border-green-500/30"
-                                : "bg-zinc-700 text-zinc-400"
+                            ? "bg-green-500/20 text-green-400 border border-green-500/30"
+                            : "bg-zinc-700 text-zinc-400"
                             }`}>
                             {item.lifecycle}
                         </span>
