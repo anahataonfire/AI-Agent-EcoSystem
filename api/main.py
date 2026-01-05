@@ -256,6 +256,39 @@ async def content_browse(limit: int = 50, x_api_key: str = Header(None)):
         return []
 
 
+@app.patch("/content/{content_id}/categories")
+async def content_update_categories(
+    content_id: str,
+    categories: List[str],
+    x_api_key: str = Header(None)
+):
+    """Update categories for a content item."""
+    verify_token(x_api_key)
+    
+    try:
+        from pathlib import Path
+        import sqlite3
+        import json
+        
+        db_path = Path(PROJECT_ROOT) / "data" / "content" / "content.db"
+        
+        with sqlite3.connect(db_path) as conn:
+            # Update categories as JSON array
+            cursor = conn.execute(
+                "UPDATE content SET categories = ? WHERE id = ?",
+                (json.dumps(categories), content_id)
+            )
+            if cursor.rowcount > 0:
+                return {"success": True, "content_id": content_id, "categories": categories}
+            else:
+                raise HTTPException(status_code=404, detail="Content not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Category update error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.delete("/content/{content_id}")
 async def content_delete(content_id: str, x_api_key: str = Header(None)):
     """Delete a content item from the library."""
@@ -271,7 +304,7 @@ async def content_delete(content_id: str, x_api_key: str = Header(None)):
         # Delete from database
         import sqlite3
         with sqlite3.connect(db_path) as conn:
-            cursor = conn.execute("DELETE FROM content_entries WHERE id = ?", (content_id,))
+            cursor = conn.execute("DELETE FROM content WHERE id = ?", (content_id,))
             if cursor.rowcount > 0:
                 return {"success": True, "deleted_id": content_id}
             else:

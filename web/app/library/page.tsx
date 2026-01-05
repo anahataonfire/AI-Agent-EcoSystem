@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -36,7 +36,7 @@ interface EvidenceItem {
 
 const CATEGORY_OPTIONS = [
     "AI/ML", "Trading", "Research", "Learning", "Baking", "Fitness",
-    "Productivity", "Development", "News", "Reference", "To Review"
+    "Productivity", "Development", "News", "Reference"
 ];
 
 export default function LibraryPage() {
@@ -51,7 +51,7 @@ export default function LibraryPage() {
         setLoading(true);
         setError(null);
         try {
-            const res = await fetch("http://localhost:8000/content/browse?limit=50", {
+            const res = await fetch("http://localhost:8000/content/browse?limit=100", {
                 headers: { "X-API-Key": "dev-token-change-me" },
             });
             if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -65,8 +65,6 @@ export default function LibraryPage() {
     };
 
     const fetchEvidence = async () => {
-        setLoading(true);
-        setError(null);
         try {
             const res = await fetch("http://localhost:8000/evidence/browse?limit=50", {
                 headers: { "X-API-Key": "dev-token-change-me" },
@@ -75,9 +73,7 @@ export default function LibraryPage() {
             const data = await res.json();
             setEvidenceItems(data);
         } catch (e: any) {
-            setError(e.message);
-        } finally {
-            setLoading(false);
+            // Silently fail for evidence
         }
     };
 
@@ -100,12 +96,47 @@ export default function LibraryPage() {
         }
     };
 
-    const filteredContent = search
-        ? contentItems.filter((item) =>
-            item.title.toLowerCase().includes(search.toLowerCase()) ||
-            item.summary.toLowerCase().includes(search.toLowerCase())
-        )
-        : contentItems;
+    const handleCategorize = async (id: string, categories: string[]) => {
+        try {
+            const res = await fetch(`http://localhost:8000/content/${id}/categories`, {
+                method: "PATCH",
+                headers: {
+                    "X-API-Key": "dev-token-change-me",
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(categories),
+            });
+            if (res.ok) {
+                // Update local state
+                setContentItems((prev) =>
+                    prev.map((item) =>
+                        item.id === id ? { ...item, categories } : item
+                    )
+                );
+            }
+        } catch (e) {
+            console.error("Categorize error:", e);
+        }
+    };
+
+    const filtered = useMemo(() => {
+        const items = search
+            ? contentItems.filter((item) =>
+                item.title.toLowerCase().includes(search.toLowerCase()) ||
+                item.summary.toLowerCase().includes(search.toLowerCase())
+            )
+            : contentItems;
+
+        // Treat items with no categories OR only 'uncategorized' as needing triage
+        const isUncategorized = (c: ContentItem) =>
+            c.categories.length === 0 ||
+            (c.categories.length === 1 && c.categories[0].toLowerCase() === "uncategorized");
+
+        return {
+            uncategorized: items.filter(isUncategorized),
+            categorized: items.filter((c) => !isUncategorized(c)),
+        };
+    }, [contentItems, search]);
 
     const filteredEvidence = search
         ? evidenceItems.filter((item) => {
@@ -118,109 +149,130 @@ export default function LibraryPage() {
         })
         : evidenceItems;
 
-    // Stats
-    const categorizedCount = contentItems.filter((c) => c.categories.length > 0).length;
-    const uncategorizedCount = contentItems.length - categorizedCount;
-
     return (
-        <div className="space-y-8">
+        <div className="space-y-6">
             {/* Header */}
             <div className="relative">
                 <div className="absolute inset-0 bg-gradient-to-r from-purple-500/10 via-blue-500/10 to-cyan-500/10 rounded-2xl blur-xl" />
                 <div className="relative bg-zinc-900/80 backdrop-blur-sm border border-zinc-800 rounded-2xl p-6">
-                    <div className="flex items-start justify-between">
+                    <div className="flex items-center justify-between">
                         <div>
-                            <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 via-blue-400 to-cyan-400 bg-clip-text text-transparent">
+                            <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-400 via-blue-400 to-cyan-400 bg-clip-text text-transparent">
                                 Content Library
                             </h1>
-                            <p className="text-zinc-400 mt-2">Your curated knowledge and research evidence</p>
+                            <p className="text-zinc-500 text-sm mt-1">
+                                {filtered.uncategorized.length} items need triage • {filtered.categorized.length} organized
+                            </p>
                         </div>
-                        <div className="flex gap-3 text-sm">
-                            <div className="bg-purple-500/20 border border-purple-500/30 rounded-xl px-4 py-2">
-                                <span className="text-purple-300 font-medium">{categorizedCount}</span>
-                                <span className="text-zinc-500 ml-1">categorized</span>
-                            </div>
-                            <div className="bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-2">
-                                <span className="text-zinc-300 font-medium">{uncategorizedCount}</span>
-                                <span className="text-zinc-500 ml-1">uncategorized</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div className="flex gap-4 mt-6">
-                        <div className="relative flex-1 max-w-md">
+                        <div className="flex gap-3">
                             <Input
-                                placeholder="Search your library..."
+                                placeholder="Search..."
                                 value={search}
                                 onChange={(e) => setSearch(e.target.value)}
-                                className="bg-zinc-800/50 border-zinc-700 pl-10 h-12 rounded-xl"
+                                className="w-48 bg-zinc-800/50 border-zinc-700 h-10 rounded-lg"
                             />
-                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500">🔍</span>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => { fetchContent(); fetchEvidence(); }}
+                                disabled={loading}
+                                className="h-10 px-4 rounded-lg border-zinc-700"
+                            >
+                                {loading ? "⟳" : "↻"}
+                            </Button>
                         </div>
-                        <Button
-                            variant="outline"
-                            onClick={() => { fetchContent(); fetchEvidence(); }}
-                            disabled={loading}
-                            className="h-12 px-6 rounded-xl border-zinc-700 hover:bg-zinc-800"
-                        >
-                            {loading ? "⟳ Loading..." : "↻ Refresh"}
-                        </Button>
                     </div>
                 </div>
             </div>
 
             {error && (
-                <div className="bg-red-950/30 border border-red-800/50 rounded-xl p-4">
+                <div className="bg-red-950/30 border border-red-800/50 rounded-xl p-3 text-sm">
                     <p className="text-red-400">⚠️ {error}</p>
                 </div>
             )}
 
             <Tabs value={activeTab} onValueChange={setActiveTab}>
-                <TabsList className="bg-zinc-800/50 p-1 rounded-xl border border-zinc-700">
+                <TabsList className="bg-zinc-800/50 p-1 rounded-lg border border-zinc-700">
                     <TabsTrigger
                         value="content"
-                        className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-purple-500 data-[state=active]:to-blue-500 rounded-lg px-6 py-2"
+                        className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-purple-500 data-[state=active]:to-blue-500 rounded-md px-4 py-1.5 text-sm"
                     >
-                        📎 Curated Links ({contentItems.length})
+                        📎 Links ({contentItems.length})
                     </TabsTrigger>
                     <TabsTrigger
                         value="evidence"
-                        className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-blue-500 data-[state=active]:to-cyan-500 rounded-lg px-6 py-2"
+                        className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-blue-500 data-[state=active]:to-cyan-500 rounded-md px-4 py-1.5 text-sm"
                     >
                         📦 Evidence ({evidenceItems.length})
                     </TabsTrigger>
                 </TabsList>
 
-                <TabsContent value="content" className="mt-6">
-                    {filteredContent.length === 0 ? (
-                        <EmptyState
-                            icon="📎"
-                            title="No curated links yet"
-                            description="Add links via the Inbox to start your collection."
-                        />
-                    ) : (
-                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                            {filteredContent.map((item) => (
-                                <ContentCard
-                                    key={item.id}
-                                    item={item}
-                                    onUpdate={fetchContent}
-                                    onDelete={() => handleDelete(item.id)}
-                                />
-                            ))}
-                        </div>
+                <TabsContent value="content" className="mt-4 space-y-6">
+                    {/* TRIAGE SECTION - Uncategorized */}
+                    {filtered.uncategorized.length > 0 && (
+                        <section>
+                            <div className="flex items-center gap-3 mb-3">
+                                <div className="flex items-center gap-2">
+                                    <span className="text-lg">📥</span>
+                                    <h2 className="text-lg font-semibold text-amber-400">Needs Triage</h2>
+                                </div>
+                                <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded-full">
+                                    {filtered.uncategorized.length} items
+                                </span>
+                            </div>
+                            <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4">
+                                <div className="space-y-2">
+                                    {filtered.uncategorized.map((item) => (
+                                        <TriageCard
+                                            key={item.id}
+                                            item={item}
+                                            onCategorize={(cats) => handleCategorize(item.id, cats)}
+                                            onDelete={() => handleDelete(item.id)}
+                                        />
+                                    ))}
+                                </div>
+                            </div>
+                        </section>
                     )}
+
+                    {/* ORGANIZED SECTION - Categorized */}
+                    <section>
+                        <div className="flex items-center gap-3 mb-3">
+                            <div className="flex items-center gap-2">
+                                <span className="text-lg">📚</span>
+                                <h2 className="text-lg font-semibold text-purple-400">Organized</h2>
+                            </div>
+                            <span className="text-xs bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full">
+                                {filtered.categorized.length} items
+                            </span>
+                        </div>
+                        {filtered.categorized.length === 0 ? (
+                            <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-8 text-center">
+                                <p className="text-zinc-500">No organized content yet. Categorize items above.</p>
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                                {filtered.categorized.map((item) => (
+                                    <OrganizedCard
+                                        key={item.id}
+                                        item={item}
+                                        onCategorize={(cats) => handleCategorize(item.id, cats)}
+                                        onDelete={() => handleDelete(item.id)}
+                                    />
+                                ))}
+                            </div>
+                        )}
+                    </section>
                 </TabsContent>
 
-                <TabsContent value="evidence" className="mt-6">
+                <TabsContent value="evidence" className="mt-4">
                     {filteredEvidence.length === 0 ? (
-                        <EmptyState
-                            icon="📦"
-                            title="No evidence collected"
-                            description="Run a mission to collect research evidence."
-                        />
+                        <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-8 text-center">
+                            <div className="text-4xl mb-3">📦</div>
+                            <p className="text-zinc-500">No evidence yet. Run a mission to collect research.</p>
+                        </div>
                     ) : (
-                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                             {filteredEvidence.map((item) => (
                                 <EvidenceCard key={item.evidence_id} item={item} />
                             ))}
@@ -232,254 +284,255 @@ export default function LibraryPage() {
     );
 }
 
-function EmptyState({ icon, title, description }: { icon: string; title: string; description: string }) {
-    return (
-        <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-12 text-center">
-            <div className="text-6xl mb-4">{icon}</div>
-            <h3 className="text-xl font-semibold text-zinc-200">{title}</h3>
-            <p className="text-zinc-500 mt-2 max-w-md mx-auto">{description}</p>
-        </div>
-    );
-}
-
-function ContentCard({
+// Triage card - horizontal, compact, focus on quick categorization
+function TriageCard({
     item,
-    onUpdate,
+    onCategorize,
     onDelete,
 }: {
     item: ContentItem;
-    onUpdate: () => void;
+    onCategorize: (categories: string[]) => void;
     onDelete: () => void;
 }) {
-    const [showCategoryDialog, setShowCategoryDialog] = useState(false);
-    const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-    const [selectedCategories, setSelectedCategories] = useState<string[]>(item.categories);
-    const [addingToPlanner, setAddingToPlanner] = useState(false);
-    const [plannerMessage, setPlannerMessage] = useState<string | null>(null);
+    const [showCategories, setShowCategories] = useState(false);
+    const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
 
-    const isCategorized = item.categories.length > 0;
-
-    const handleCategorize = async () => {
-        // TODO: Call API to update categories
-        console.log("Updating categories:", selectedCategories);
-        setShowCategoryDialog(false);
-        onUpdate();
-    };
-
-    const handleAddToPlanner = async () => {
-        setAddingToPlanner(true);
-        setPlannerMessage(null);
-        try {
-            const res = await fetch(
-                "http://localhost:8000/planner/task?title=" + encodeURIComponent(`Review: ${item.title}`),
-                {
-                    method: "POST",
-                    headers: { "X-API-Key": "dev-token-change-me" },
-                }
-            );
-            if (res.ok) {
-                setPlannerMessage("✓ Added!");
-                setTimeout(() => setPlannerMessage(null), 2000);
-            } else {
-                setPlannerMessage("✗ Failed");
-            }
-        } catch (e) {
-            console.error("Failed to add to planner:", e);
-            setPlannerMessage("✗ Error");
-        } finally {
-            setAddingToPlanner(false);
-        }
-    };
-
-    // Clean summary - remove error messages
     const cleanSummary = item.summary
         .replace(/Fallback analysis:.*$/gm, "")
         .replace(/400 INVALID_ARGUMENT.*$/gm, "")
-        .trim() || "No summary available";
+        .trim();
+
+    const handleQuickCategorize = (cat: string) => {
+        onCategorize([cat]);
+    };
 
     return (
-        <div className="group relative">
-            {/* Glow effect for categorized items */}
-            <div
-                className={`absolute inset-0 rounded-2xl blur-xl transition-opacity ${isCategorized
-                        ? "bg-gradient-to-r from-purple-500/30 to-blue-500/30 opacity-50 group-hover:opacity-75"
-                        : "bg-gradient-to-r from-zinc-500/10 to-zinc-500/10 opacity-0 group-hover:opacity-50"
-                    }`}
-            />
-
-            <Card
-                className={`relative h-full backdrop-blur-sm rounded-2xl overflow-hidden transition-all ${isCategorized
-                        ? "bg-gradient-to-br from-zinc-900/90 via-zinc-900/80 to-purple-900/20 border-purple-500/30 hover:border-purple-400/50"
-                        : "bg-zinc-900/80 border-zinc-800 hover:border-zinc-600"
-                    }`}
-            >
-                {/* Category badge at top */}
-                {isCategorized && (
-                    <div className="absolute top-3 right-3 flex flex-wrap gap-1 justify-end max-w-[60%]">
-                        {item.categories.slice(0, 2).map((cat) => (
-                            <span
-                                key={cat}
-                                className="text-[10px] bg-purple-500/30 text-purple-200 px-2 py-0.5 rounded-full border border-purple-500/40"
-                            >
-                                {cat}
-                            </span>
-                        ))}
-                        {item.categories.length > 2 && (
-                            <span className="text-[10px] text-purple-400">
-                                +{item.categories.length - 2}
-                            </span>
-                        )}
-                    </div>
-                )}
-
-                {/* Uncategorized badge */}
-                {!isCategorized && (
-                    <div className="absolute top-3 right-3">
-                        <span className="text-[10px] bg-zinc-700/50 text-zinc-400 px-2 py-0.5 rounded-full border border-zinc-600/50">
-                            Uncategorized
-                        </span>
-                    </div>
-                )}
-
-                <CardHeader className="pb-2 pr-24">
-                    <CardTitle className="text-base font-semibold line-clamp-2 text-zinc-100">
-                        {item.title}
-                    </CardTitle>
-                </CardHeader>
-
-                <CardContent className="space-y-3 pb-4">
-                    <CardDescription className="line-clamp-3 text-zinc-400 text-sm">
-                        {cleanSummary}
-                    </CardDescription>
-
-                    {/* Source Link */}
+        <div className="bg-zinc-900/80 border border-zinc-800 rounded-lg p-3 hover:border-amber-500/30 transition-all">
+            <div className="flex items-start gap-3">
+                {/* Content */}
+                <div className="flex-1 min-w-0">
+                    <h3 className="font-medium text-sm text-zinc-100 truncate">{item.title}</h3>
+                    <p className="text-xs text-zinc-500 line-clamp-1 mt-0.5">
+                        {cleanSummary || "No description"}
+                    </p>
                     {item.source_url && (
                         <a
                             href={item.source_url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                            className="text-[10px] text-blue-400 hover:underline mt-1 inline-block"
                         >
-                            <span>🔗</span>
-                            <span className="hover:underline truncate max-w-[200px]">
-                                {(() => {
-                                    try {
-                                        return new URL(item.source_url).hostname;
-                                    } catch {
-                                        return item.source_url.slice(0, 30);
-                                    }
-                                })()}
-                            </span>
+                            🔗 {(() => { try { return new URL(item.source_url).hostname; } catch { return "link"; } })()}
                         </a>
                     )}
+                </div>
 
-                    {/* Action Bar */}
-                    <div className="flex items-center gap-1 pt-2 border-t border-zinc-800">
-                        <Dialog open={showCategoryDialog} onOpenChange={setShowCategoryDialog}>
-                            <DialogTrigger asChild>
-                                <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    className="flex-1 h-8 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
-                                >
-                                    🏷️
-                                </Button>
-                            </DialogTrigger>
-                            <DialogContent className="bg-zinc-900 border-zinc-800">
-                                <DialogHeader>
-                                    <DialogTitle>Categorize Content</DialogTitle>
-                                    <DialogDescription>Select categories for this content</DialogDescription>
-                                </DialogHeader>
-                                <div className="grid grid-cols-2 gap-2 py-4">
-                                    {CATEGORY_OPTIONS.map((cat) => (
-                                        <Button
-                                            key={cat}
-                                            variant={selectedCategories.includes(cat) ? "default" : "outline"}
-                                            size="sm"
-                                            onClick={() => {
-                                                setSelectedCategories((prev) =>
-                                                    prev.includes(cat)
-                                                        ? prev.filter((c) => c !== cat)
-                                                        : [...prev, cat]
-                                                );
-                                            }}
-                                            className={
-                                                selectedCategories.includes(cat)
-                                                    ? "bg-gradient-to-r from-purple-500 to-blue-500"
-                                                    : "border-zinc-700"
-                                            }
-                                        >
-                                            {cat}
-                                        </Button>
-                                    ))}
-                                </div>
-                                <DialogFooter>
-                                    <DialogClose asChild>
-                                        <Button variant="ghost">Cancel</Button>
-                                    </DialogClose>
-                                    <Button
-                                        onClick={handleCategorize}
-                                        className="bg-gradient-to-r from-purple-500 to-blue-500"
-                                    >
-                                        Save Categories
-                                    </Button>
-                                </DialogFooter>
-                            </DialogContent>
-                        </Dialog>
-
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            className={`flex-1 h-8 text-xs transition-all ${plannerMessage?.includes("✓")
-                                    ? "text-green-400 bg-green-500/10"
-                                    : plannerMessage?.includes("✗")
-                                        ? "text-red-400 bg-red-500/10"
-                                        : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
-                                }`}
-                            onClick={handleAddToPlanner}
-                            disabled={addingToPlanner}
-                        >
-                            {plannerMessage || (addingToPlanner ? "⟳" : "📋")}
-                        </Button>
-
-                        {/* Delete Button */}
-                        <Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
-                            <DialogTrigger asChild>
-                                <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    className="h-8 text-xs text-zinc-500 hover:text-red-400 hover:bg-red-500/10"
-                                >
-                                    🗑️
-                                </Button>
-                            </DialogTrigger>
-                            <DialogContent className="bg-zinc-900 border-zinc-800">
-                                <DialogHeader>
-                                    <DialogTitle className="text-red-400">Delete Content</DialogTitle>
-                                    <DialogDescription>
-                                        Are you sure you want to delete "{item.title}"? This cannot be undone.
-                                    </DialogDescription>
-                                </DialogHeader>
-                                <DialogFooter>
-                                    <DialogClose asChild>
-                                        <Button variant="ghost">Cancel</Button>
-                                    </DialogClose>
-                                    <Button
-                                        onClick={() => {
-                                            onDelete();
-                                            setShowDeleteConfirm(false);
-                                        }}
-                                        className="bg-red-500 hover:bg-red-600"
-                                    >
-                                        Delete
-                                    </Button>
-                                </DialogFooter>
-                            </DialogContent>
-                        </Dialog>
+                {/* Quick Actions */}
+                <div className="flex items-center gap-1 shrink-0">
+                    {/* Quick category buttons */}
+                    <div className="hidden sm:flex gap-1">
+                        {CATEGORY_OPTIONS.slice(0, 4).map((cat) => (
+                            <Button
+                                key={cat}
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleQuickCategorize(cat)}
+                                className="h-7 px-2 text-[10px] text-zinc-500 hover:text-purple-400 hover:bg-purple-500/10"
+                            >
+                                {cat}
+                            </Button>
+                        ))}
                     </div>
-                </CardContent>
-            </Card>
+
+                    {/* More categories dialog */}
+                    <Dialog open={showCategories} onOpenChange={setShowCategories}>
+                        <DialogTrigger asChild>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 w-7 p-0 text-zinc-500 hover:text-purple-400"
+                            >
+                                ⋯
+                            </Button>
+                        </DialogTrigger>
+                        <DialogContent className="bg-zinc-900 border-zinc-800">
+                            <DialogHeader>
+                                <DialogTitle>Categorize: {item.title}</DialogTitle>
+                                <DialogDescription>Select one or more categories</DialogDescription>
+                            </DialogHeader>
+                            <div className="grid grid-cols-2 gap-2 py-4">
+                                {CATEGORY_OPTIONS.map((cat) => (
+                                    <Button
+                                        key={cat}
+                                        variant={selectedCategories.includes(cat) ? "default" : "outline"}
+                                        size="sm"
+                                        onClick={() => {
+                                            setSelectedCategories((prev) =>
+                                                prev.includes(cat)
+                                                    ? prev.filter((c) => c !== cat)
+                                                    : [...prev, cat]
+                                            );
+                                        }}
+                                        className={
+                                            selectedCategories.includes(cat)
+                                                ? "bg-gradient-to-r from-purple-500 to-blue-500"
+                                                : "border-zinc-700"
+                                        }
+                                    >
+                                        {cat}
+                                    </Button>
+                                ))}
+                            </div>
+                            <DialogFooter>
+                                <DialogClose asChild>
+                                    <Button variant="ghost">Cancel</Button>
+                                </DialogClose>
+                                <Button
+                                    onClick={() => {
+                                        if (selectedCategories.length > 0) {
+                                            onCategorize(selectedCategories);
+                                            setShowCategories(false);
+                                            setSelectedCategories([]);
+                                        }
+                                    }}
+                                    disabled={selectedCategories.length === 0}
+                                    className="bg-gradient-to-r from-purple-500 to-blue-500"
+                                >
+                                    Save
+                                </Button>
+                            </DialogFooter>
+                        </DialogContent>
+                    </Dialog>
+
+                    {/* Delete */}
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={onDelete}
+                        className="h-7 w-7 p-0 text-zinc-600 hover:text-red-400 hover:bg-red-500/10"
+                    >
+                        ✕
+                    </Button>
+                </div>
+            </div>
         </div>
+    );
+}
+
+// Organized card - visual, shows categories prominently
+function OrganizedCard({
+    item,
+    onCategorize,
+    onDelete,
+}: {
+    item: ContentItem;
+    onCategorize: (categories: string[]) => void;
+    onDelete: () => void;
+}) {
+    const [showEdit, setShowEdit] = useState(false);
+    const [selectedCategories, setSelectedCategories] = useState<string[]>(item.categories);
+
+    const cleanSummary = item.summary
+        .replace(/Fallback analysis:.*$/gm, "")
+        .replace(/400 INVALID_ARGUMENT.*$/gm, "")
+        .trim();
+
+    return (
+        <Card className="bg-gradient-to-br from-zinc-900/90 to-purple-900/10 border-purple-500/20 hover:border-purple-400/40 rounded-xl transition-all group">
+            <CardHeader className="pb-2">
+                {/* Category badges */}
+                <div className="flex flex-wrap gap-1 mb-2">
+                    {item.categories.map((cat) => (
+                        <span
+                            key={cat}
+                            className="text-[10px] bg-purple-500/30 text-purple-200 px-2 py-0.5 rounded-full"
+                        >
+                            {cat}
+                        </span>
+                    ))}
+                </div>
+                <CardTitle className="text-sm font-medium line-clamp-2 text-zinc-100">
+                    {item.title}
+                </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 pb-3">
+                <CardDescription className="text-xs line-clamp-2 text-zinc-500">
+                    {cleanSummary || "No description"}
+                </CardDescription>
+
+                {item.source_url && (
+                    <a
+                        href={item.source_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] text-blue-400 hover:underline"
+                    >
+                        🔗 {(() => { try { return new URL(item.source_url).hostname; } catch { return "link"; } })()}
+                    </a>
+                )}
+
+                {/* Actions */}
+                <div className="flex gap-1 pt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <Dialog open={showEdit} onOpenChange={setShowEdit}>
+                        <DialogTrigger asChild>
+                            <Button variant="ghost" size="sm" className="h-6 text-[10px] text-zinc-500">
+                                Edit
+                            </Button>
+                        </DialogTrigger>
+                        <DialogContent className="bg-zinc-900 border-zinc-800">
+                            <DialogHeader>
+                                <DialogTitle>Edit Categories</DialogTitle>
+                            </DialogHeader>
+                            <div className="grid grid-cols-2 gap-2 py-4">
+                                {CATEGORY_OPTIONS.map((cat) => (
+                                    <Button
+                                        key={cat}
+                                        variant={selectedCategories.includes(cat) ? "default" : "outline"}
+                                        size="sm"
+                                        onClick={() => {
+                                            setSelectedCategories((prev) =>
+                                                prev.includes(cat)
+                                                    ? prev.filter((c) => c !== cat)
+                                                    : [...prev, cat]
+                                            );
+                                        }}
+                                        className={
+                                            selectedCategories.includes(cat)
+                                                ? "bg-gradient-to-r from-purple-500 to-blue-500"
+                                                : "border-zinc-700"
+                                        }
+                                    >
+                                        {cat}
+                                    </Button>
+                                ))}
+                            </div>
+                            <DialogFooter>
+                                <DialogClose asChild>
+                                    <Button variant="ghost">Cancel</Button>
+                                </DialogClose>
+                                <Button
+                                    onClick={() => {
+                                        onCategorize(selectedCategories);
+                                        setShowEdit(false);
+                                    }}
+                                    className="bg-gradient-to-r from-purple-500 to-blue-500"
+                                >
+                                    Save
+                                </Button>
+                            </DialogFooter>
+                        </DialogContent>
+                    </Dialog>
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={onDelete}
+                        className="h-6 text-[10px] text-zinc-500 hover:text-red-400"
+                    >
+                        Delete
+                    </Button>
+                </div>
+            </CardContent>
+        </Card>
     );
 }
 
@@ -489,41 +542,37 @@ function EvidenceCard({ item }: { item: EvidenceItem }) {
     const source = item.metadata?.source_url || item.payload?.link;
 
     return (
-        <div className="group relative">
-            <div className="absolute inset-0 bg-gradient-to-r from-blue-500/20 to-cyan-500/20 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity blur-xl" />
-            <Card className="relative bg-zinc-900/80 backdrop-blur-sm border-zinc-800 hover:border-zinc-600 transition-all rounded-2xl overflow-hidden">
-                <CardHeader className="pb-3">
-                    <div className="flex items-start justify-between gap-2">
-                        <CardTitle className="text-lg font-semibold line-clamp-2 text-zinc-100">
-                            {title}
-                        </CardTitle>
-                        <span
-                            className={`shrink-0 text-xs px-2.5 py-1 rounded-full ${item.lifecycle === "active"
-                                    ? "bg-green-500/20 text-green-400 border border-green-500/30"
-                                    : "bg-zinc-700 text-zinc-400"
-                                }`}
-                        >
-                            {item.lifecycle}
-                        </span>
-                    </div>
-                </CardHeader>
-                <CardContent>
-                    <CardDescription className="line-clamp-3 text-zinc-400">
-                        {summary}
-                    </CardDescription>
-                    {source && (
-                        <a
-                            href={source}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-sm text-cyan-400 hover:text-cyan-300 transition-colors mt-4"
-                        >
-                            <span>🔗</span>
-                            <span className="hover:underline">View source</span>
-                        </a>
-                    )}
-                </CardContent>
-            </Card>
-        </div>
+        <Card className="bg-zinc-900/80 border-zinc-800 hover:border-cyan-500/30 rounded-xl transition-all">
+            <CardHeader className="pb-2">
+                <div className="flex items-start justify-between gap-2">
+                    <CardTitle className="text-sm font-medium line-clamp-2 text-zinc-100">
+                        {title}
+                    </CardTitle>
+                    <span
+                        className={`shrink-0 text-[10px] px-2 py-0.5 rounded-full ${item.lifecycle === "active"
+                            ? "bg-green-500/20 text-green-400"
+                            : "bg-zinc-700 text-zinc-400"
+                            }`}
+                    >
+                        {item.lifecycle}
+                    </span>
+                </div>
+            </CardHeader>
+            <CardContent>
+                <CardDescription className="text-xs line-clamp-2 text-zinc-500">
+                    {summary}
+                </CardDescription>
+                {source && (
+                    <a
+                        href={source}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] text-cyan-400 hover:underline mt-2 inline-block"
+                    >
+                        🔗 View source
+                    </a>
+                )}
+            </CardContent>
+        </Card>
     );
 }
