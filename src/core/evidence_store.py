@@ -1,21 +1,27 @@
 """
-Evidence Store for persisting and retrieving execution artifacts.
+Evidence Store - SQLite Backend (P0 Migration)
 
-This module provides a simple but reliable way to store evidence from tool
-executions. Evidence is stored as JSON with hash-based IDs for deduplication.
+This module provides a reliable, production-ready evidence store using SQLite:
+- Atomic writes with transactions
+- Hash-based deduplication with payload_hash
+- Indexed queries on evidence_id, query_hash, lifecycle
+- Race condition prevention via SQLite locking
+- Backward compatible API with JSON version
+
+Migrated from JSON to address corruption and concurrency risks.
 """
 
 import hashlib
 import json
-import os
 import re
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ============================================================================
-# MALICIOUS PAYLOAD SANITIZATION (Prompt X)
+# MALICIOUS PAYLOAD SANITIZATION (Prompt X) - Preserved from original
 # ============================================================================
 
 class MaliciousPayloadError(Exception):
@@ -112,16 +118,74 @@ def _sanitize_string(text: str) -> Tuple[str, bool]:
     return result, was_sanitized
 
 
+# ============================================================================
+# SQLITE EVIDENCE STORE
+# ============================================================================
+
+DB_PATH = Path(__file__).parent.parent.parent / "data" / "evidence_store.db"
+
+
+def _get_connection() -> sqlite3.Connection:
+    """Get database connection with schema initialization."""
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    
+    # Enable WAL mode for better concurrency
+    conn.execute("PRAGMA journal_mode=WAL")
+    
+    # Create schema
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS evidence (
+            evidence_id TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            metadata_json TEXT DEFAULT '{}',
+            query_hash TEXT,
+            source_url TEXT,
+            source_trust_tier INTEGER DEFAULT 3,
+            lifecycle TEXT DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            sanitized INTEGER DEFAULT 0
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_evidence_query_hash 
+        ON evidence(query_hash);
+        
+        CREATE INDEX IF NOT EXISTS idx_evidence_lifecycle 
+        ON evidence(lifecycle);
+        
+        CREATE INDEX IF NOT EXISTS idx_evidence_payload_hash 
+        ON evidence(payload_hash);
+        
+        CREATE INDEX IF NOT EXISTS idx_evidence_created_at 
+        ON evidence(created_at);
+    """)
+    conn.commit()
+    return conn
+
+
+def _compute_payload_hash(payload: Dict[str, Any]) -> str:
+    """Compute SHA-256 hash of normalized payload for deduplication."""
+    normalized = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(normalized.encode()).hexdigest()
+
+
 class EvidenceStore:
     """
-    Persistent store for execution evidence and artifacts.
+    Production-grade evidence store backed by SQLite.
     
-    Evidence is stored in a JSON file with hash-based IDs. This enables:
-    - Deduplication of identical payloads
-    - Fast retrieval by ID
-    - Human-readable storage for debugging
+    Features:
+    - Atomic writes with transactions
+    - Hash-based deduplication (payload_hash)
+    - Indexed queries (evidence_id, query_hash, lifecycle, created_at)
+    - WAL mode for concurrent access
+    - Backward compatible API
     
-    For production, consider migrating to SQLite or a proper database.
+    Evidence lifecycle states:
+    - active: Available for citation
+    - expired: Old, should not be cited
+    - revoked: Explicitly invalidated
     """
     
     def __init__(self, storage_path: Optional[str] = None):
@@ -129,85 +193,128 @@ class EvidenceStore:
         Initialize the evidence store.
         
         Args:
-            storage_path: Path to the JSON storage file. 
-                         Defaults to 'data/evidence_store.json' in project root.
+            storage_path: Optional custom path to SQLite database.
+                         Defaults to 'data/evidence_store.db'
         """
-        if storage_path is None:
-            # Default to project's data directory
-            project_root = Path(__file__).parent.parent.parent
-            storage_path = str(project_root / "data" / "evidence_store.json")
+        if storage_path:
+            self.db_path = Path(storage_path)
+        else:
+            self.db_path = DB_PATH
         
-        self.storage_path = Path(storage_path)
-        self._ensure_storage_exists()
+        # Ensure DB is initialized
+        self._get_conn()
     
-    def _ensure_storage_exists(self) -> None:
-        """Create storage file and parent directories if they don't exist."""
-        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.storage_path.exists():
-            self._write_store({})
-    
-    def _read_store(self) -> Dict[str, Any]:
-        """Read the entire store from disk."""
-        try:
-            with open(self.storage_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
-            return {}
-    
-    def _write_store(self, data: Dict[str, Any]) -> None:
-        """Write the entire store to disk."""
-        with open(self.storage_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, default=str)
+    def _get_conn(self) -> sqlite3.Connection:
+        """Get a database connection."""
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        
+        # Create schema if needed
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS evidence (
+                evidence_id TEXT PRIMARY KEY,
+                payload_json TEXT NOT NULL,
+                payload_hash TEXT NOT NULL,
+                metadata_json TEXT DEFAULT '{}',
+                query_hash TEXT,
+                source_url TEXT,
+                source_trust_tier INTEGER DEFAULT 3,
+                lifecycle TEXT DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                sanitized INTEGER DEFAULT 0
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_evidence_query_hash 
+            ON evidence(query_hash);
+            
+            CREATE INDEX IF NOT EXISTS idx_evidence_lifecycle 
+            ON evidence(lifecycle);
+            
+            CREATE INDEX IF NOT EXISTS idx_evidence_payload_hash 
+            ON evidence(payload_hash);
+            
+            CREATE INDEX IF NOT EXISTS idx_evidence_created_at 
+            ON evidence(created_at);
+        """)
+        conn.commit()
+        return conn
     
     def _generate_id(self, payload: Dict[str, Any]) -> str:
-        """
-        Generate a hash-based ID for a payload.
-        
-        Uses SHA-256 truncated to 12 chars with 'ev_' prefix for readability.
-        """
-        # Sort keys for consistent hashing
-        normalized = json.dumps(payload, sort_keys=True, default=str)
-        hash_digest = hashlib.sha256(normalized.encode()).hexdigest()[:12]
+        """Generate a hash-based ID for a payload."""
+        hash_digest = _compute_payload_hash(payload)[:12]
         return f"ev_{hash_digest}"
     
-    def save(self, payload: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None, custom_id: Optional[str] = None) -> str:
+    def save(
+        self, 
+        payload: Dict[str, Any], 
+        metadata: Optional[Dict[str, Any]] = None, 
+        custom_id: Optional[str] = None
+    ) -> str:
         """
         Save a payload to the evidence store.
         
         Args:
             payload: The data to store (must be JSON-serializable)
-            metadata: Optional metadata to attach (source, type, etc.)
+            metadata: Optional metadata (source_url, query_hash, lifecycle, etc.)
             custom_id: Optional manual ID (e.g. for deterministic final reports)
         
         Returns:
-            The ID of the stored evidence (custom_id if provided)
+            The evidence_id of the stored evidence
             
         Raises:
-            MaliciousPayloadError: If payload contains footer spoof or identity injection
+            MaliciousPayloadError: If payload contains forbidden content
         """
-        # Sanitize payload before storage (Prompt X)
+        # Sanitize payload before storage
         sanitized_payload, was_sanitized = sanitize_payload(payload)
         
-        # Prepare metadata
-        final_metadata = metadata.copy() if metadata else {}
-        if was_sanitized:
-            final_metadata["sanitized"] = True
-        
+        # Compute hashes
+        payload_hash = _compute_payload_hash(sanitized_payload)
         evidence_id = custom_id if custom_id else self._generate_id(sanitized_payload)
         
-        store = self._read_store()
-        store[evidence_id] = {
-            "payload": sanitized_payload,
-            "metadata": final_metadata,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-        self._write_store(store)
+        # Prepare metadata
+        meta = metadata.copy() if metadata else {}
+        if was_sanitized:
+            meta["sanitized"] = True
+        
+        # Extract indexed fields from metadata
+        query_hash = meta.pop("query_hash", None)
+        source_url = meta.pop("source_url", None)
+        source_trust_tier = meta.pop("source_trust_tier", 3)
+        lifecycle = meta.pop("lifecycle", "active")
+        
+        now = datetime.now(timezone.utc).isoformat()
+        
+        conn = self._get_conn()
+        try:
+            conn.execute("""
+                INSERT OR REPLACE INTO evidence 
+                (evidence_id, payload_json, payload_hash, metadata_json, 
+                 query_hash, source_url, source_trust_tier, lifecycle, 
+                 created_at, sanitized)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                evidence_id,
+                json.dumps(sanitized_payload, default=str),
+                payload_hash,
+                json.dumps(meta, default=str),
+                query_hash,
+                source_url,
+                source_trust_tier,
+                lifecycle,
+                now,
+                1 if was_sanitized else 0
+            ))
+            conn.commit()
+        finally:
+            conn.close()
         
         return evidence_id
     
     def get(self, evidence_id: str) -> Optional[Dict[str, Any]]:
         """
-        Retrieve evidence by ID.
+        Retrieve evidence payload by ID.
         
         Args:
             evidence_id: The ID returned from save()
@@ -215,13 +322,18 @@ class EvidenceStore:
         Returns:
             The stored payload, or None if not found
         """
-        store = self._read_store()
-        entry = store.get(evidence_id)
-        
-        if entry is None:
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                "SELECT payload_json FROM evidence WHERE evidence_id = ?",
+                (evidence_id,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return json.loads(row["payload_json"])
             return None
-        
-        return entry.get("payload")
+        finally:
+            conn.close()
     
     def get_with_metadata(self, evidence_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -231,20 +343,119 @@ class EvidenceStore:
             evidence_id: The ID returned from save()
         
         Returns:
-            The full entry (payload, metadata, created_at), or None if not found
+            Dict with payload, metadata, created_at, etc. or None
         """
-        store = self._read_store()
-        return store.get(evidence_id)
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                "SELECT * FROM evidence WHERE evidence_id = ?",
+                (evidence_id,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return {
+                    "evidence_id": row["evidence_id"],
+                    "payload": json.loads(row["payload_json"]),
+                    "payload_hash": row["payload_hash"],
+                    "metadata": json.loads(row["metadata_json"]),
+                    "query_hash": row["query_hash"],
+                    "source_url": row["source_url"],
+                    "source_trust_tier": row["source_trust_tier"],
+                    "lifecycle": row["lifecycle"],
+                    "created_at": row["created_at"],
+                    "sanitized": bool(row["sanitized"]),
+                }
+            return None
+        finally:
+            conn.close()
     
     def exists(self, evidence_id: str) -> bool:
         """Check if evidence exists by ID."""
-        store = self._read_store()
-        return evidence_id in store
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                "SELECT 1 FROM evidence WHERE evidence_id = ?",
+                (evidence_id,)
+            )
+            return cursor.fetchone() is not None
+        finally:
+            conn.close()
     
-    def list_ids(self) -> list:
+    def list_ids(self) -> List[str]:
         """List all evidence IDs in the store."""
-        store = self._read_store()
-        return list(store.keys())
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute("SELECT evidence_id FROM evidence")
+            return [row["evidence_id"] for row in cursor.fetchall()]
+        finally:
+            conn.close()
+    
+    def find_by_query_hash(self, query_hash: str, lifecycle: str = "active") -> List[str]:
+        """
+        Find all evidence IDs for a given query hash.
+        
+        Args:
+            query_hash: The query hash to search for
+            lifecycle: Filter by lifecycle state (default: active)
+        
+        Returns:
+            List of evidence IDs
+        """
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                "SELECT evidence_id FROM evidence WHERE query_hash = ? AND lifecycle = ?",
+                (query_hash, lifecycle)
+            )
+            return [row["evidence_id"] for row in cursor.fetchall()]
+        finally:
+            conn.close()
+    
+    def find_by_payload_hash(self, payload_hash: str) -> Optional[str]:
+        """
+        Find evidence by payload hash (deduplication check).
+        
+        Args:
+            payload_hash: SHA-256 hash of the payload
+        
+        Returns:
+            evidence_id if duplicate exists, None otherwise
+        """
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                "SELECT evidence_id FROM evidence WHERE payload_hash = ? LIMIT 1",
+                (payload_hash,)
+            )
+            row = cursor.fetchone()
+            return row["evidence_id"] if row else None
+        finally:
+            conn.close()
+    
+    def update_lifecycle(self, evidence_id: str, lifecycle: str) -> bool:
+        """
+        Update the lifecycle state of evidence.
+        
+        Args:
+            evidence_id: The evidence to update
+            lifecycle: New state: 'active', 'expired', or 'revoked'
+        
+        Returns:
+            True if updated, False if not found
+        """
+        if lifecycle not in ("active", "expired", "revoked"):
+            raise ValueError(f"Invalid lifecycle: {lifecycle}")
+        
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                "UPDATE evidence SET lifecycle = ? WHERE evidence_id = ?",
+                (lifecycle, evidence_id)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
     
     def delete(self, evidence_id: str) -> bool:
         """
@@ -253,12 +464,16 @@ class EvidenceStore:
         Returns:
             True if deleted, False if not found
         """
-        store = self._read_store()
-        if evidence_id in store:
-            del store[evidence_id]
-            self._write_store(store)
-            return True
-        return False
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                "DELETE FROM evidence WHERE evidence_id = ?",
+                (evidence_id,)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
     
     def clear(self) -> int:
         """
@@ -267,7 +482,42 @@ class EvidenceStore:
         Returns:
             Number of entries cleared
         """
-        store = self._read_store()
-        count = len(store)
-        self._write_store({})
-        return count
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute("SELECT COUNT(*) as cnt FROM evidence")
+            count = cursor.fetchone()["cnt"]
+            conn.execute("DELETE FROM evidence")
+            conn.commit()
+            return count
+        finally:
+            conn.close()
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """
+        Get storage statistics.
+        
+        Returns:
+            Dict with counts and breakdown by lifecycle
+        """
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute("SELECT COUNT(*) as total FROM evidence")
+            total = cursor.fetchone()["total"]
+            
+            cursor = conn.execute("""
+                SELECT lifecycle, COUNT(*) as count 
+                FROM evidence 
+                GROUP BY lifecycle
+            """)
+            by_lifecycle = {row["lifecycle"]: row["count"] for row in cursor.fetchall()}
+            
+            cursor = conn.execute("SELECT COUNT(*) as sanitized FROM evidence WHERE sanitized = 1")
+            sanitized = cursor.fetchone()["sanitized"]
+            
+            return {
+                "total": total,
+                "by_lifecycle": by_lifecycle,
+                "sanitized_count": sanitized,
+            }
+        finally:
+            conn.close()

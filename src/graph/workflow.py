@@ -23,13 +23,60 @@ from src.tools.market_tools import fetch_market_data, fetch_news, fetch_sentimen
 from langchain_core.messages import BaseMessage
 
 
-# Tool registry - maps tool names to executor functions
-TOOL_REGISTRY = {
+# ============================================================================
+# TOOL REGISTRIES - Separated to prevent mock data poisoning (P1 Fix)
+# ============================================================================
+import os
+
+# Real tools - safe for production
+TOOL_REGISTRY_REAL = {
     "DataFetchRSS": execute_data_fetch_rss,
-    "fetch_market_data": fetch_market_data,
-    "fetch_news": fetch_news,
-    "fetch_sentiment": fetch_sentiment,
 }
+
+# Simulated/mock tools - development only
+TOOL_REGISTRY_SIM = {
+    "fetch_market_data": fetch_market_data,  # Mock implementation
+    "fetch_news": fetch_news,                # Mock implementation
+    "fetch_sentiment": fetch_sentiment,      # Mock implementation
+}
+
+# Execution mode: "production" uses only real tools, "development" includes mocks
+EXECUTION_MODE = os.environ.get("DTL_EXECUTION_MODE", "development")
+
+
+def get_tool_registry(mode: str = None) -> dict:
+    """
+    Get the appropriate tool registry based on execution mode.
+    
+    Args:
+        mode: Override mode ("production" or "development"). 
+              Defaults to DTL_EXECUTION_MODE env var.
+    
+    Returns:
+        Combined or restricted tool registry
+        
+    Note:
+        In production mode, only real tools are available.
+        Simulated tools will cause lookup failures if called.
+    """
+    current_mode = mode or EXECUTION_MODE
+    
+    if current_mode == "production":
+        return TOOL_REGISTRY_REAL.copy()
+    else:
+        # Development mode: include both real and simulated
+        registry = TOOL_REGISTRY_REAL.copy()
+        registry.update(TOOL_REGISTRY_SIM)
+        return registry
+
+
+def is_simulated_tool(tool_name: str) -> bool:
+    """Check if a tool is from the simulated registry."""
+    return tool_name in TOOL_REGISTRY_SIM
+
+
+# Legacy alias for backward compatibility (uses mode-aware selection)
+TOOL_REGISTRY = get_tool_registry()
 
 
 def prune_history(messages: list[BaseMessage], evidence_map: Dict[str, Any]) -> list[BaseMessage]:
