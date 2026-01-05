@@ -65,15 +65,25 @@ export default function MissionControlPage() {
     };
 
     return (
-        <div className="space-y-6">
-            <div>
-                <h1 className="text-3xl font-bold">🛰️ Mission Control</h1>
-                <p className="text-zinc-400 mt-1">Execute missions and monitor live telemetry</p>
+        <div className="space-y-8">
+            {/* Header */}
+            <div className="relative">
+                <div className="absolute inset-0 bg-gradient-to-r from-orange-500/10 via-red-500/10 to-purple-500/10 rounded-2xl blur-xl" />
+                <div className="relative bg-zinc-900/80 backdrop-blur-sm border border-zinc-800 rounded-2xl p-6">
+                    <h1 className="text-4xl font-bold bg-gradient-to-r from-orange-400 via-red-400 to-purple-400 bg-clip-text text-transparent">
+                        Mission Control
+                    </h1>
+                    <p className="text-zinc-400 mt-2">Execute missions and monitor live telemetry</p>
+                </div>
             </div>
 
-            <Card className="bg-zinc-900 border-zinc-800">
+            {/* Mission Input */}
+            <Card className="bg-zinc-900/80 backdrop-blur-sm border-zinc-800 rounded-2xl">
                 <CardHeader>
-                    <CardTitle>📋 Mission Briefing</CardTitle>
+                    <CardTitle className="flex items-center gap-2">
+                        <span className="text-2xl">📋</span>
+                        Mission Briefing
+                    </CardTitle>
                     <CardDescription>Define the objective for the autonomous agent swarm</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -81,78 +91,96 @@ export default function MissionControlPage() {
                         placeholder="e.g., Compare AI news coverage from BBC and TechCrunch"
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
-                        className="bg-zinc-800 border-zinc-700 min-h-[100px]"
+                        className="bg-zinc-800/50 border-zinc-700 min-h-[120px] rounded-xl text-lg"
                     />
-                    <Button onClick={executeMission} disabled={loading || !query} className="w-full">
-                        {loading ? "🔄 Mission in progress..." : "🚀 Execute Mission"}
+                    <Button
+                        onClick={executeMission}
+                        disabled={loading || !query}
+                        className="w-full h-14 text-lg rounded-xl bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600"
+                    >
+                        {loading ? (
+                            <span className="flex items-center gap-2">
+                                <span className="animate-spin">⟳</span> Mission in progress...
+                            </span>
+                        ) : (
+                            <span className="flex items-center gap-2">
+                                🚀 Execute Mission
+                            </span>
+                        )}
                     </Button>
                 </CardContent>
             </Card>
 
             {error && (
-                <Card className="bg-red-950/50 border-red-800">
-                    <CardContent className="p-4">
-                        <p className="text-red-400">❌ Mission Aborted: {error}</p>
-                    </CardContent>
-                </Card>
+                <div className="bg-red-950/30 border border-red-800/50 rounded-2xl p-6">
+                    <p className="text-red-400 flex items-center gap-2">
+                        <span>❌</span> Mission Aborted: {error}
+                    </p>
+                </div>
             )}
 
             {result && (
                 <>
-                    <Card className="bg-zinc-900 border-zinc-800">
-                        <CardHeader>
-                            <CardTitle>📡 Live Telemetry</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                            <div className="grid grid-cols-4 gap-4">
-                                <TelemetryCard
-                                    label="🎯 Alignment Score"
-                                    value={`${result.telemetry.alignment_score.toFixed(1)}%`}
-                                />
-                                <TelemetryCard
-                                    label="📦 Evidence Count"
-                                    value={Object.keys(result.evidence_map).length.toString()}
-                                />
-                                <TelemetryCard
-                                    label="🛡️ Sanitizer Status"
-                                    value={result.telemetry.sanitizer_reject_count === 0 ? "🟢 Secure" : `🔴 ${result.telemetry.sanitizer_reject_count} Rejects`}
-                                />
-                                <TelemetryCard
-                                    label="⚙️ Steps Executed"
-                                    value={result.circuit_breaker.step_count.toString()}
-                                />
-                            </div>
-                        </CardContent>
-                    </Card>
+                    {/* Telemetry Grid */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <TelemetryCard
+                            icon="🎯"
+                            label="Alignment Score"
+                            value={`${result.telemetry.alignment_score.toFixed(0)}%`}
+                            color="from-green-500 to-emerald-500"
+                        />
+                        <TelemetryCard
+                            icon="📦"
+                            label="Evidence Count"
+                            value={Object.keys(result.evidence_map).length.toString()}
+                            color="from-blue-500 to-cyan-500"
+                        />
+                        <TelemetryCard
+                            icon="🛡️"
+                            label="Sanitizer"
+                            value={result.telemetry.sanitizer_reject_count === 0 ? "Secure" : `${result.telemetry.sanitizer_reject_count} Rejects`}
+                            color={result.telemetry.sanitizer_reject_count === 0 ? "from-green-500 to-teal-500" : "from-red-500 to-orange-500"}
+                        />
+                        <TelemetryCard
+                            icon="⚙️"
+                            label="Steps Executed"
+                            value={result.circuit_breaker.step_count.toString()}
+                            color="from-purple-500 to-pink-500"
+                        />
+                    </div>
 
+                    {/* Executive Summary */}
                     {result.structured_report && (
-                        <Card className="bg-blue-950/30 border-blue-800">
-                            <CardContent className="p-4">
-                                <p className="font-medium">Executive Summary:</p>
-                                <p className="text-zinc-300 mt-1">{result.structured_report.executive_summary}</p>
-                                <div className="flex gap-4 mt-3">
-                                    <span className="text-sm">
-                                        Sentiment: <strong className={result.structured_report.sentiment_score >= 7 ? "text-green-400" : result.structured_report.sentiment_score <= 4 ? "text-red-400" : "text-yellow-400"}>{result.structured_report.sentiment_score}/10</strong>
+                        <Card className="bg-blue-950/30 border-blue-800/50 rounded-2xl">
+                            <CardContent className="p-6">
+                                <h3 className="font-semibold text-blue-300 mb-2">Executive Summary</h3>
+                                <p className="text-zinc-300">{result.structured_report.executive_summary}</p>
+                                <div className="flex gap-4 mt-4 text-sm">
+                                    <span className={`px-3 py-1 rounded-full ${result.structured_report.sentiment_score >= 7
+                                            ? "bg-green-500/20 text-green-400"
+                                            : result.structured_report.sentiment_score <= 4
+                                                ? "bg-red-500/20 text-red-400"
+                                                : "bg-yellow-500/20 text-yellow-400"
+                                        }`}>
+                                        Sentiment: {result.structured_report.sentiment_score}/10
                                     </span>
-                                    {result.structured_report.key_entities.length > 0 && (
-                                        <span className="text-sm">
-                                            Entities: {result.structured_report.key_entities.map((e) => (
-                                                <code key={e} className="bg-zinc-800 px-1 mx-1 rounded text-xs">{e}</code>
-                                            ))}
-                                        </span>
-                                    )}
                                 </div>
                             </CardContent>
                         </Card>
                     )}
 
-                    <Card className="bg-zinc-900 border-zinc-800">
+                    {/* Report */}
+                    <Card className="bg-zinc-900/80 backdrop-blur-sm border-zinc-800 rounded-2xl">
                         <CardHeader>
-                            <CardTitle>📄 Mission Report</CardTitle>
+                            <CardTitle className="flex items-center gap-2">
+                                <span>📄</span> Mission Report
+                            </CardTitle>
                         </CardHeader>
                         <CardContent>
-                            <div className="bg-zinc-950 p-4 rounded-lg border border-zinc-800 prose prose-invert prose-sm max-w-none">
-                                <pre className="whitespace-pre-wrap text-sm">{result.final_report}</pre>
+                            <div className="bg-zinc-950/50 p-6 rounded-xl border border-zinc-800">
+                                <pre className="whitespace-pre-wrap text-sm text-zinc-300 font-mono leading-relaxed">
+                                    {result.final_report}
+                                </pre>
                             </div>
                         </CardContent>
                     </Card>
@@ -162,11 +190,23 @@ export default function MissionControlPage() {
     );
 }
 
-function TelemetryCard({ label, value }: { label: string; value: string }) {
+function TelemetryCard({ icon, label, value, color }: { icon: string; label: string; value: string; color: string }) {
     return (
-        <div className="bg-zinc-800 p-3 rounded-lg">
-            <p className="text-xs text-zinc-500">{label}</p>
-            <p className="text-lg font-bold mt-1">{value}</p>
+        <div className="group relative">
+            <div className={`absolute inset-0 bg-gradient-to-r ${color} rounded-2xl opacity-0 group-hover:opacity-20 transition-opacity blur-xl`} />
+            <Card className="relative bg-zinc-900/80 backdrop-blur-sm border-zinc-800 rounded-2xl">
+                <CardContent className="p-5">
+                    <div className="flex items-center gap-3">
+                        <span className="text-2xl">{icon}</span>
+                        <div>
+                            <p className={`text-xl font-bold bg-gradient-to-r ${color} bg-clip-text text-transparent`}>
+                                {value}
+                            </p>
+                            <p className="text-xs text-zinc-500">{label}</p>
+                        </div>
+                    </div>
+                </CardContent>
+            </Card>
         </div>
     );
 }

@@ -28,39 +28,16 @@ export default function PolymarketPage() {
         setError(null);
 
         try {
-            const res = await fetch("http://localhost:8000/polymarket/opportunities", {
-                headers: { "X-API-Key": "dev-token-change-me" },
-            });
+            const res = await fetch(
+                `http://localhost:8000/polymarket/opportunities?max_hours=${maxHours}&min_certainty=${minCertainty / 100}&min_liquidity=${minLiquidity}`,
+                { headers: { "X-API-Key": "dev-token-change-me" } }
+            );
 
             if (!res.ok) throw new Error(`API error: ${res.status}`);
-
             const data = await res.json();
             setOpportunities(data || []);
         } catch (e: any) {
             setError(e.message);
-            // Demo data for UI testing
-            setOpportunities([
-                {
-                    question: "Will Bitcoin exceed $100k by end of January 2026?",
-                    certainty_side: "YES",
-                    certainty_pct: 0.97,
-                    hours_remaining: 2.5,
-                    liquidity: 45000,
-                    apr_estimate: 892,
-                    market_url: "https://polymarket.com/event/btc-100k",
-                    event_slug: "btc-100k-jan-2026",
-                },
-                {
-                    question: "Will the Fed cut rates in January 2026?",
-                    certainty_side: "NO",
-                    certainty_pct: 0.96,
-                    hours_remaining: 8.2,
-                    liquidity: 28000,
-                    apr_estimate: 456,
-                    market_url: "https://polymarket.com/event/fed-rates",
-                    event_slug: "fed-rates-jan-2026",
-                },
-            ]);
         } finally {
             setLoading(false);
         }
@@ -75,141 +52,174 @@ export default function PolymarketPage() {
         : 0;
 
     return (
-        <div className="space-y-6">
-            <div>
-                <h1 className="text-3xl font-bold">🎯 Polymarket Certainty Scanner</h1>
-                <p className="text-zinc-400 mt-1">Find high-certainty markets approaching resolution for maximum APR trades</p>
+        <div className="space-y-8">
+            {/* Header */}
+            <div className="relative">
+                <div className="absolute inset-0 bg-gradient-to-r from-emerald-500/10 via-green-500/10 to-teal-500/10 rounded-2xl blur-xl" />
+                <div className="relative bg-zinc-900/80 backdrop-blur-sm border border-zinc-800 rounded-2xl p-6">
+                    <h1 className="text-4xl font-bold bg-gradient-to-r from-emerald-400 via-green-400 to-teal-400 bg-clip-text text-transparent">
+                        Polymarket Scanner
+                    </h1>
+                    <p className="text-zinc-400 mt-2">Find high-certainty markets approaching resolution</p>
+                </div>
             </div>
 
-            <Card className="bg-zinc-900 border-zinc-800">
+            {/* Scanner Controls */}
+            <Card className="bg-zinc-900/80 backdrop-blur-sm border-zinc-800 rounded-2xl">
                 <CardHeader>
-                    <CardTitle>⚙️ Scanner Settings</CardTitle>
+                    <CardTitle className="flex items-center gap-2">
+                        <span className="text-2xl">⚙️</span>
+                        Scanner Settings
+                    </CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-4">
-                    <div className="grid grid-cols-3 gap-4">
+                <CardContent className="space-y-6">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                         <div>
-                            <label className="text-sm text-zinc-400">Max Hours to Resolution</label>
-                            <input
-                                type="range"
-                                min={1}
-                                max={24}
-                                value={maxHours}
-                                onChange={(e) => setMaxHours(Number(e.target.value))}
-                                className="w-full mt-2"
-                            />
-                            <span className="text-sm">{maxHours}h</span>
+                            <label className="text-sm text-zinc-400 mb-2 block">Max Hours to Resolution</label>
+                            <div className="flex items-center gap-4">
+                                <input
+                                    type="range"
+                                    min={1}
+                                    max={24}
+                                    value={maxHours}
+                                    onChange={(e) => setMaxHours(Number(e.target.value))}
+                                    className="flex-1 accent-emerald-500"
+                                />
+                                <span className="text-lg font-bold text-emerald-400 w-12">{maxHours}h</span>
+                            </div>
                         </div>
                         <div>
-                            <label className="text-sm text-zinc-400">Min Certainty %</label>
-                            <input
-                                type="range"
-                                min={50}
-                                max={99}
-                                value={minCertainty}
-                                onChange={(e) => setMinCertainty(Number(e.target.value))}
-                                className="w-full mt-2"
-                            />
-                            <span className="text-sm">{minCertainty}%</span>
+                            <label className="text-sm text-zinc-400 mb-2 block">Min Certainty %</label>
+                            <div className="flex items-center gap-4">
+                                <input
+                                    type="range"
+                                    min={50}
+                                    max={99}
+                                    value={minCertainty}
+                                    onChange={(e) => setMinCertainty(Number(e.target.value))}
+                                    className="flex-1 accent-emerald-500"
+                                />
+                                <span className="text-lg font-bold text-emerald-400 w-12">{minCertainty}%</span>
+                            </div>
                         </div>
                         <div>
-                            <label className="text-sm text-zinc-400">Min Liquidity ($)</label>
+                            <label className="text-sm text-zinc-400 mb-2 block">Min Liquidity ($)</label>
                             <input
                                 type="number"
                                 value={minLiquidity}
                                 onChange={(e) => setMinLiquidity(Number(e.target.value))}
-                                className="w-full mt-2 bg-zinc-800 border border-zinc-700 rounded px-3 py-1"
+                                className="w-full bg-zinc-800/50 border border-zinc-700 rounded-xl px-4 py-2.5 text-lg"
                             />
                         </div>
                     </div>
-                    <Button onClick={scanMarkets} disabled={loading} className="w-full">
-                        {loading ? "🔄 Scanning..." : "🔍 Scan Markets"}
+                    <Button
+                        onClick={scanMarkets}
+                        disabled={loading}
+                        className="w-full h-14 text-lg rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600"
+                    >
+                        {loading ? "⟳ Scanning markets..." : "🔍 Scan Markets"}
                     </Button>
                 </CardContent>
             </Card>
 
             {error && (
-                <Card className="bg-yellow-950/50 border-yellow-800">
-                    <CardContent className="p-4">
-                        <p className="text-yellow-400">⚠️ API unavailable, showing demo data. Error: {error}</p>
-                    </CardContent>
-                </Card>
+                <div className="bg-yellow-950/30 border border-yellow-800/50 rounded-2xl p-4">
+                    <p className="text-yellow-400">⚠️ {error}</p>
+                </div>
             )}
 
+            {/* Stats */}
             {opportunities.length > 0 && (
-                <>
-                    <div className="grid grid-cols-4 gap-4">
-                        <Card className="bg-zinc-900 border-zinc-800">
-                            <CardContent className="p-4">
-                                <p className="text-xs text-zinc-500">Total Liquidity</p>
-                                <p className="text-2xl font-bold">${totalLiquidity.toLocaleString()}</p>
-                            </CardContent>
-                        </Card>
-                        <Card className="bg-zinc-900 border-zinc-800">
-                            <CardContent className="p-4">
-                                <p className="text-xs text-zinc-500">Avg APR</p>
-                                <p className="text-2xl font-bold text-green-400">{avgApr.toFixed(0)}%</p>
-                            </CardContent>
-                        </Card>
-                        <Card className="bg-zinc-900 border-zinc-800">
-                            <CardContent className="p-4">
-                                <p className="text-xs text-zinc-500">Soonest Resolution</p>
-                                <p className="text-2xl font-bold">{soonest.toFixed(1)}h</p>
-                            </CardContent>
-                        </Card>
-                        <Card className="bg-zinc-900 border-zinc-800">
-                            <CardContent className="p-4">
-                                <p className="text-xs text-zinc-500">Opportunities</p>
-                                <p className="text-2xl font-bold">{opportunities.length}</p>
-                            </CardContent>
-                        </Card>
-                    </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <StatCard icon="💰" label="Total Liquidity" value={`$${totalLiquidity.toLocaleString()}`} color="from-emerald-500 to-green-500" />
+                    <StatCard icon="📈" label="Avg APR" value={`${avgApr.toFixed(0)}%`} color="from-green-500 to-teal-500" />
+                    <StatCard icon="⏱️" label="Soonest" value={`${soonest.toFixed(1)}h`} color="from-teal-500 to-cyan-500" />
+                    <StatCard icon="🎯" label="Opportunities" value={opportunities.length.toString()} color="from-cyan-500 to-blue-500" />
+                </div>
+            )}
 
-                    <div className="space-y-3">
-                        {opportunities.map((opp, i) => (
-                            <OpportunityCard key={i} opportunity={opp} />
-                        ))}
-                    </div>
-                </>
+            {/* Opportunities */}
+            {opportunities.length > 0 && (
+                <div className="space-y-4">
+                    {opportunities.map((opp, i) => (
+                        <OpportunityCard key={i} opportunity={opp} />
+                    ))}
+                </div>
+            )}
+
+            {!loading && opportunities.length === 0 && !error && (
+                <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-12 text-center">
+                    <div className="text-6xl mb-4">🎯</div>
+                    <h3 className="text-xl font-semibold text-zinc-200">Ready to scan</h3>
+                    <p className="text-zinc-500 mt-2">Click "Scan Markets" to find opportunities</p>
+                </div>
             )}
         </div>
     );
 }
 
-function OpportunityCard({ opportunity }: { opportunity: Opportunity }) {
-    const urgencyColor =
-        opportunity.hours_remaining < 1
-            ? "bg-red-500/20 border-red-500/50"
-            : opportunity.hours_remaining < 4
-                ? "bg-yellow-500/20 border-yellow-500/50"
-                : "bg-green-500/20 border-green-500/50";
+function StatCard({ icon, label, value, color }: { icon: string; label: string; value: string; color: string }) {
+    return (
+        <div className="group relative">
+            <div className={`absolute inset-0 bg-gradient-to-r ${color} rounded-2xl opacity-0 group-hover:opacity-20 transition-opacity blur-xl`} />
+            <Card className="relative bg-zinc-900/80 backdrop-blur-sm border-zinc-800 rounded-2xl">
+                <CardContent className="p-5">
+                    <div className="flex items-center gap-3">
+                        <span className="text-2xl">{icon}</span>
+                        <div>
+                            <p className={`text-xl font-bold bg-gradient-to-r ${color} bg-clip-text text-transparent`}>{value}</p>
+                            <p className="text-xs text-zinc-500">{label}</p>
+                        </div>
+                    </div>
+                </CardContent>
+            </Card>
+        </div>
+    );
+}
 
-    const urgencyIcon =
-        opportunity.hours_remaining < 1 ? "🔴" : opportunity.hours_remaining < 4 ? "🟡" : "🟢";
+function OpportunityCard({ opportunity }: { opportunity: Opportunity }) {
+    const isUrgent = opportunity.hours_remaining < 1;
+    const isWarning = opportunity.hours_remaining < 4;
+
+    const borderColor = isUrgent
+        ? "border-red-500/50 bg-red-950/20"
+        : isWarning
+            ? "border-yellow-500/50 bg-yellow-950/20"
+            : "border-emerald-500/50 bg-emerald-950/20";
+
+    const urgencyIcon = isUrgent ? "🔴" : isWarning ? "🟡" : "🟢";
 
     return (
-        <Card className={`${urgencyColor} border`}>
-            <CardContent className="p-4">
-                <div className="flex items-start justify-between">
+        <Card className={`${borderColor} border rounded-2xl transition-all hover:scale-[1.01]`}>
+            <CardContent className="p-6">
+                <div className="flex items-start justify-between gap-4">
                     <div className="flex-1">
-                        <p className="font-bold">
-                            {urgencyIcon} {opportunity.apr_estimate.toLocaleString()}% APR | ⏳ {opportunity.hours_remaining.toFixed(1)}h
-                        </p>
-                        <p className="text-sm text-zinc-300 mt-1">{opportunity.question}</p>
-                        <p className="text-sm text-zinc-400 mt-2">
-                            Certainty: <code className="bg-zinc-800 px-1 rounded">{opportunity.certainty_side}</code> @ <strong>{(opportunity.certainty_pct * 100).toFixed(1)}%</strong>
-                        </p>
+                        <div className="flex items-center gap-3 mb-3">
+                            <span className="text-xl">{urgencyIcon}</span>
+                            <span className="text-2xl font-bold text-emerald-400">
+                                {opportunity.apr_estimate.toLocaleString()}% APR
+                            </span>
+                            <span className="text-zinc-400">|</span>
+                            <span className="text-lg text-zinc-300">
+                                ⏳ {opportunity.hours_remaining.toFixed(1)}h
+                            </span>
+                        </div>
+                        <p className="text-zinc-200 text-lg leading-relaxed">{opportunity.question}</p>
+                        <div className="flex items-center gap-4 mt-4">
+                            <span className="px-3 py-1 bg-zinc-800 rounded-full text-sm">
+                                {opportunity.certainty_side} @ <strong className="text-emerald-400">{(opportunity.certainty_pct * 100).toFixed(1)}%</strong>
+                            </span>
+                            <span className="text-zinc-500">💰 ${opportunity.liquidity.toLocaleString()}</span>
+                        </div>
                     </div>
-                    <div className="text-right space-y-1">
-                        <p className="text-sm">💰 ${opportunity.liquidity.toLocaleString()}</p>
-                        <a
-                            href={opportunity.market_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-400 text-sm hover:underline"
-                        >
-                            View Market →
-                        </a>
-                    </div>
+                    <a
+                        href={opportunity.market_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="shrink-0 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 px-6 py-3 rounded-xl text-sm font-medium transition-all"
+                    >
+                        Trade →
+                    </a>
                 </div>
             </CardContent>
         </Card>
