@@ -296,6 +296,8 @@ function TriageCard({
 }) {
     const [showCategories, setShowCategories] = useState(false);
     const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+    const [autoSuggesting, setAutoSuggesting] = useState(false);
+    const [suggestedCategories, setSuggestedCategories] = useState<string[] | null>(null);
 
     const cleanSummary = item.summary
         .replace(/Fallback analysis:.*$/gm, "")
@@ -304,6 +306,36 @@ function TriageCard({
 
     const handleQuickCategorize = (cat: string) => {
         onCategorize([cat]);
+    };
+
+    const handleAutoCategorize = async () => {
+        setAutoSuggesting(true);
+        setSuggestedCategories(null);
+        try {
+            const res = await fetch(`http://localhost:8000/content/${item.id}/auto-categorize`, {
+                method: "POST",
+                headers: { "X-API-Key": "dev-token-change-me" },
+            });
+            const data = await res.json();
+            if (data.success && data.suggested_categories) {
+                setSuggestedCategories(data.suggested_categories);
+            }
+        } catch (e) {
+            console.error("Auto-categorize error:", e);
+        } finally {
+            setAutoSuggesting(false);
+        }
+    };
+
+    const handleAcceptSuggestion = () => {
+        if (suggestedCategories) {
+            onCategorize(suggestedCategories);
+            setSuggestedCategories(null);
+        }
+    };
+
+    const handleRejectSuggestion = () => {
+        setSuggestedCategories(null);
     };
 
     return (
@@ -325,13 +357,55 @@ function TriageCard({
                             🔗 {(() => { try { return new URL(item.source_url).hostname; } catch { return "link"; } })()}
                         </a>
                     )}
+
+                    {/* AI Suggestion Banner */}
+                    {suggestedCategories && (
+                        <div className="mt-2 flex items-center gap-2 bg-gradient-to-r from-cyan-500/10 to-purple-500/10 border border-cyan-500/30 rounded-lg p-2">
+                            <span className="text-xs text-cyan-300">✨ AI suggests:</span>
+                            <div className="flex gap-1 flex-1">
+                                {suggestedCategories.map((cat) => (
+                                    <span key={cat} className="text-xs bg-cyan-500/30 text-cyan-200 px-2 py-0.5 rounded-full">
+                                        {cat}
+                                    </span>
+                                ))}
+                            </div>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={handleAcceptSuggestion}
+                                className="h-6 px-2 text-xs text-green-400 hover:text-green-300 hover:bg-green-500/10"
+                            >
+                                ✓ Accept
+                            </Button>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={handleRejectSuggestion}
+                                className="h-6 px-2 text-xs text-zinc-500 hover:text-zinc-300"
+                            >
+                                ✕
+                            </Button>
+                        </div>
+                    )}
                 </div>
 
                 {/* Quick Actions */}
                 <div className="flex items-center gap-1 shrink-0">
+                    {/* Auto-categorize button */}
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={handleAutoCategorize}
+                        disabled={autoSuggesting}
+                        className="h-7 px-2 text-[10px] text-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/10"
+                        title="Auto-categorize with AI"
+                    >
+                        {autoSuggesting ? "⏳" : "✨ Auto"}
+                    </Button>
+
                     {/* Quick category buttons */}
-                    <div className="hidden sm:flex gap-1">
-                        {CATEGORY_OPTIONS.slice(0, 4).map((cat) => (
+                    <div className="hidden lg:flex gap-1">
+                        {CATEGORY_OPTIONS.slice(0, 3).map((cat) => (
                             <Button
                                 key={cat}
                                 variant="ghost"

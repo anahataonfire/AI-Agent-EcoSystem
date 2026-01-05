@@ -289,6 +289,94 @@ async def content_update_categories(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/content/{content_id}/auto-categorize")
+async def content_auto_categorize(content_id: str, x_api_key: str = Header(None)):
+    """Use AI to suggest categories for a content item."""
+    verify_token(x_api_key)
+    
+    try:
+        from pathlib import Path
+        import sqlite3
+        import json
+        import google.generativeai as genai
+        
+        db_path = Path(PROJECT_ROOT) / "data" / "content" / "content.db"
+        
+        # Get content details
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT id, title, summary, url FROM content WHERE id = ?",
+                (content_id,)
+            ).fetchone()
+            
+            if not row:
+                raise HTTPException(status_code=404, detail="Content not found")
+            
+            title = row["title"]
+            summary = row["summary"]
+            url = row["url"] or ""
+        
+        # Configure Gemini
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            raise HTTPException(status_code=500, detail="No Gemini API key configured")
+        
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        
+        # Available categories - more refined list
+        categories = [
+            "AI/ML", "Trading", "Research", "Learning", "Baking", "Fitness",
+            "Productivity", "Development", "News", "Reference", "Finance",
+            "Health", "Technology", "Business", "Creative", "Science"
+        ]
+        
+        prompt = f"""Analyze this content and suggest 1-3 most relevant categories.
+
+Title: {title}
+Summary: {summary[:500] if summary else 'No summary'}
+URL: {url}
+
+Available categories: {', '.join(categories)}
+
+Return ONLY a JSON array of category names, nothing else. Example: ["AI/ML", "Research"]
+Pick categories that best match the content topic. Be specific and accurate."""
+
+        response = model.generate_content(prompt)
+        response_text = response.text.strip()
+        
+        # Parse JSON from response (handle markdown code blocks)
+        if "```" in response_text:
+            response_text = response_text.split("```")[1]
+            if response_text.startswith("json"):
+                response_text = response_text[4:]
+            response_text = response_text.strip()
+        
+        suggested = json.loads(response_text)
+        
+        # Validate categories
+        valid_categories = [c for c in suggested if c in categories]
+        if not valid_categories:
+            valid_categories = ["Reference"]  # Default fallback
+        
+        return {
+            "success": True,
+            "content_id": content_id,
+            "title": title,
+            "suggested_categories": valid_categories
+        }
+        
+    except HTTPException:
+        raise
+    except json.JSONDecodeError as e:
+        print(f"JSON parse error: {e}, response: {response_text}")
+        return {"success": False, "error": "Failed to parse AI response", "suggested_categories": ["Reference"]}
+    except Exception as e:
+        print(f"Auto-categorize error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.delete("/content/{content_id}")
 async def content_delete(content_id: str, x_api_key: str = Header(None)):
     """Delete a content item from the library."""
