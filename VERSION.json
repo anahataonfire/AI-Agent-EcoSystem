@@ -1,8 +1,22 @@
 {
-    "version": "2.0.0",
+    "version": "2.1.0",
     "name": "DTL - Dynamic Trading Layer",
-    "release_date": "2025-12-26",
+    "release_date": "2026-01-04",
     "changelog": {
+        "2.1.0": {
+            "date": "2026-01-04",
+            "summary": "Architectural hardening and control plane enhancements",
+            "changes": [
+                "P0: Evidence Store migrated to SQLite with payload_hash indexing",
+                "P1: Tool registry separation (REAL vs SIM) with production mode",
+                "P1: Claim-Evidence entailment tracking with grading",
+                "P1: Layered RunState architecture (Inputs/Artifacts/Views)",
+                "Phase 10: Global kill switch, MetaAnalyst wiring, Advisor SQLite",
+                "Phase 11: Agent consolidation (removed Strategist, Researcher)",
+                "Phase 12: Rate limiter, Cost tracker, Query cache",
+                "581 tests (core functionality verified)"
+            ]
+        },
         "2.0.0": {
             "date": "2025-12-26",
             "summary": "Full DTL v2.0 implementation with ADK orchestration",
