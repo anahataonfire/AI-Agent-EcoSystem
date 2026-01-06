@@ -75,7 +75,8 @@ Your `report_body_markdown` MUST include ALL of these sections:
 - **Minimum 500 words** in report body
 - **Minimum 10 citations** using `[EVID:ev_xxx]` format
 - **Every factual claim** must have a citation
-- **Diverse sources**: Must cite both news AND Reddit evidence
+- **If Reddit fails (HTTP 403), proceed with Google News only**
+- **DO NOT RETRY failed sources - move to CompleteTask**
 
 ## Citation Rules (CRITICAL)
 
