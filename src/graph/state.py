@@ -247,6 +247,43 @@ class RunState(BaseModel):
         description="The action validated by sanitizer"
     )
     
+    # ========== EVIDENCE STATE (top-level for LangGraph updates) ==========
+    
+    evidence_map: Dict[str, Dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Map of evidence_id → metadata"
+    )
+    
+    item_lifecycle: Dict[str, Dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Tracks status and retries for each evidence item"
+    )
+    
+    last_tool_result: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Result from the most recent tool execution"
+    )
+    
+    telemetry: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "planned_steps": 0,
+            "successful_steps": 0,
+            "wasted_tokens": 0,
+            "alignment_score": 0.0,
+            "grounding_failures": 0,
+            "evidence_rejections": 0,
+            "reuse_denied_reason": None,
+            "security_mode": "normal",
+            "sanitizer_reject_count": 0,
+        },
+        description="Metrics for performance, cost, and security"
+    )
+    
+    working_summary: str = Field(
+        default="",
+        description="Bounded summary of current insights"
+    )
+    
     # ========== OUTPUT ==========
     
     final_report: Optional[str] = Field(
@@ -260,35 +297,14 @@ class RunState(BaseModel):
     )
     
     # ========== BACKWARD COMPATIBILITY ALIASES ==========
-    # These properties provide backward compatibility with existing code
-    
-    @property
-    def evidence_map(self) -> Dict[str, Dict[str, Any]]:
-        """Backward compatibility: access via artifacts layer."""
-        return self.artifacts.evidence_map
-    
-    @property
-    def item_lifecycle(self) -> Dict[str, Dict[str, Any]]:
-        """Backward compatibility: access via artifacts layer."""
-        return self.artifacts.item_lifecycle
-    
-    @property
-    def telemetry(self) -> Dict[str, Any]:
-        """Backward compatibility: access via views layer."""
-        return self.views.telemetry
-    
-    @property
-    def working_summary(self) -> str:
-        """Backward compatibility: access via views layer."""
-        return self.views.working_summary
+    # NOTE: evidence_map, item_lifecycle, telemetry, working_summary,
+    # current_plan, and approved_action are now top-level fields,
+    # not properties, so LangGraph can update them directly.
     
     @property
     def identity_context(self) -> Optional[Dict[str, Any]]:
         """Backward compatibility: access via inputs layer."""
         return self.inputs.identity_snapshot or None
-    
-    # NOTE: current_plan and approved_action are now top-level fields, 
-    # not properties, so LangGraph can update them directly.
 
     class Config:
         # Allow arbitrary types for LangChain message objects
