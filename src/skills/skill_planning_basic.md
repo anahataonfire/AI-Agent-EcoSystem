@@ -67,10 +67,11 @@ When the user asks for a specific topic (e.g., "Epstein files", "Tesla earnings"
 
 ## Multi-Source Requirement
 
-**CRITICAL**: For thorough research, you MUST:
+**For thorough research**:
 1. First fetch from `google_news` with 25 items
-2. Then fetch from `reddit_search` with 15 items
-3. Only THEN call `CompleteTask` to synthesize findings
+2. Optionally try `reddit_search` for discussion (may fail with 403)
+3. **If ANY source returns an error (HTTP 403, 500, etc.), DO NOT RETRY. Proceed with existing evidence.**
+4. Call `CompleteTask` once you have 10+ items, even if one source failed
 
 ## Constraints
 
