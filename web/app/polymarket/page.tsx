@@ -16,12 +16,13 @@ interface Opportunity {
 }
 
 export default function PolymarketPage() {
-    const [maxHours, setMaxHours] = useState(4);
-    const [minCertainty, setMinCertainty] = useState(95);
+    const [maxHours, setMaxHours] = useState(24); // Default: 24h (matches backend)
+    const [minCertainty, setMinCertainty] = useState(90); // Default: 90% (matches backend)
     const [minLiquidity, setMinLiquidity] = useState(100);
     const [loading, setLoading] = useState(false);
     const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
     const [error, setError] = useState<string | null>(null);
+    const [sortBy, setSortBy] = useState<'apr' | 'time' | 'liquidity'>('apr');
 
     const scanMarkets = async () => {
         setLoading(true);
@@ -80,12 +81,13 @@ export default function PolymarketPage() {
                                 <input
                                     type="range"
                                     min={1}
-                                    max={24}
+                                    max={168}
+                                    step={1}
                                     value={maxHours}
                                     onChange={(e) => setMaxHours(Number(e.target.value))}
                                     className="flex-1 accent-emerald-500"
                                 />
-                                <span className="text-lg font-bold text-emerald-400 w-12">{maxHours}h</span>
+                                <span className="text-lg font-bold text-emerald-400 w-16">{maxHours}h</span>
                             </div>
                         </div>
                         <div>
@@ -93,7 +95,7 @@ export default function PolymarketPage() {
                             <div className="flex items-center gap-4">
                                 <input
                                     type="range"
-                                    min={50}
+                                    min={80}
                                     max={99}
                                     value={minCertainty}
                                     onChange={(e) => setMinCertainty(Number(e.target.value))}
@@ -207,7 +209,7 @@ function OpportunityCard({ opportunity }: { opportunity: Opportunity }) {
                         <p className="text-zinc-200 text-lg leading-relaxed">{opportunity.question}</p>
                         <div className="flex items-center gap-4 mt-4">
                             <span className="px-3 py-1 bg-zinc-800 rounded-full text-sm">
-                                {opportunity.certainty_side} @ <strong className="text-emerald-400">{(opportunity.certainty_pct * 100).toFixed(1)}%</strong>
+                                {opportunity.certainty_side} @ <strong className="text-emerald-400">{opportunity.certainty_pct.toFixed(1)}%</strong>
                             </span>
                             <span className="text-zinc-500">💰 ${opportunity.liquidity.toLocaleString()}</span>
                         </div>
