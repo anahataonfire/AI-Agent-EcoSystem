@@ -235,6 +235,18 @@ class RunState(BaseModel):
         description="Tracks steps, retries, and detects loops"
     )
     
+    # ========== PLAN STATE (top-level for LangGraph updates) ==========
+    
+    current_plan: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="The current plan being executed"
+    )
+    
+    approved_action: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="The action validated by sanitizer"
+    )
+    
     # ========== OUTPUT ==========
     
     final_report: Optional[str] = Field(
@@ -275,15 +287,8 @@ class RunState(BaseModel):
         """Backward compatibility: access via inputs layer."""
         return self.inputs.identity_snapshot or None
     
-    @property
-    def current_plan(self) -> Optional[Dict[str, Any]]:
-        """Backward compatibility: access via artifacts layer."""
-        return self.artifacts.current_plan
-    
-    @property
-    def approved_action(self) -> Optional[Dict[str, Any]]:
-        """Backward compatibility: access via artifacts layer."""
-        return self.artifacts.approved_action
+    # NOTE: current_plan and approved_action are now top-level fields, 
+    # not properties, so LangGraph can update them directly.
 
     class Config:
         # Allow arbitrary types for LangChain message objects
