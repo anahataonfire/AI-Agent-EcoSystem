@@ -260,17 +260,28 @@ class CertaintyScanner:
             # Only use if it's earlier than API date (for early-closing markets)
             extracted_date = self._extract_date_from_question(question, now)
             
-            # Prioritize API endDate, only use extracted if it's valid and earlier
-            if extracted_date and extracted_date < api_end_time:
+            # Smart date selection:
+            # 1. If API date is in the past but extracted is in future -> use extracted (API is stale)
+            # 2. If both are valid, use the earlier one
+            # 3. Otherwise use API date
+            api_hours = (api_end_time - now).total_seconds() / 3600 if api_end_time else -9999
+            extracted_hours = (extracted_date - now).total_seconds() / 3600 if extracted_date else -9999
+            
+            if api_hours <= 0 and extracted_hours > 0:
+                # API date is stale, use extracted
+                end_time = extracted_date
+            elif extracted_hours > 0 and extracted_hours < api_hours:
+                # Both valid, extracted is sooner
                 end_time = extracted_date
             else:
+                # Default to API
                 end_time = api_end_time
             
             # Skip if already ended or closed or in the past
             if market.get("closed", False):
                 return None
             
-            hours_remaining = (end_time - now).total_seconds() / 3600
+            hours_remaining = (end_time - now).total_seconds() / 3600 if end_time else -1
             if hours_remaining <= 0:
                 return None
             
