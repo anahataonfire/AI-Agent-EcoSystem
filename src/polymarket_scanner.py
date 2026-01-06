@@ -187,35 +187,51 @@ class CertaintyScanner:
         """
         Extract resolution date from question text for multi-market events.
         
-        Examples:
-        - "Another US strike on Venezuela on January 6?" -> 2026-01-06
-        - "Will ETH close above $X on December 17?" -> 2025/2026-12-17
+        Handles formats like:
+        - "on January 6" / "on Jan 6th"
+        - "by February 1, 2026"
+        - "before March 15th"
+        - "in December" (uses month-end)
         """
         import re
         
-        # Pattern: "on/by January 6" or "on December 17"
+        # Expanded month mapping with abbreviations
         MONTHS = {
-            'january': 1, 'february': 2, 'march': 3, 'april': 4,
-            'may': 5, 'june': 6, 'july': 7, 'august': 8,
-            'september': 9, 'october': 10, 'november': 11, 'december': 12
+            'january': 1, 'jan': 1,
+            'february': 2, 'feb': 2,
+            'march': 3, 'mar': 3,
+            'april': 4, 'apr': 4,
+            'may': 5,
+            'june': 6, 'jun': 6,
+            'july': 7, 'jul': 7,
+            'august': 8, 'aug': 8,
+            'september': 9, 'sep': 9, 'sept': 9,
+            'october': 10, 'oct': 10,
+            'november': 11, 'nov': 11,
+            'december': 12, 'dec': 12
         }
         
-        pattern = r'(?:on|by)\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})'
+        # Pattern: handles "on/by/before January 6th, 2026" with optional ordinal and year
+        pattern = r'(?:on|by|before|in|during)\s+(?P<month>january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|sept|october|oct|november|nov|december|dec)\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(?P<year>\d{4}))?'
+        
         match = re.search(pattern, question.lower())
         
         if match:
-            month_name = match.group(1)
-            day = int(match.group(2))
+            month_name = match.group('month')
+            day = int(match.group('day'))
             month = MONTHS.get(month_name)
+            year = int(match.group('year')) if match.group('year') else now.year
             
             if month:
-                # Assume current year, or next year if the date has passed
-                year = now.year
                 try:
+                    # Set to end of day (23:59:59 UTC)
                     target = datetime(year, month, day, 23, 59, 59, tzinfo=timezone.utc)
+                    
+                    # Handle cross-year: if target is in past, don't return it
+                    # (caller will fall back to API endDate)
                     if target < now:
-                        # Could be next year, but for already-passed dates, return None
                         return None
+                    
                     return target
                 except ValueError:
                     return None
@@ -233,21 +249,24 @@ class CertaintyScanner:
             # Get question text for potential date extraction
             question = market.get("question", "")
             
-            # Try to extract resolution date from question text
-            # This handles multi-market events like "US strike on January 6?"
-            extracted_date = self._extract_date_from_question(question, now)
-            
-            # Get end date from API (fallback if question doesn't have explicit date)
+            # Get end date from API (primary source of truth)
             end_str = market.get("endDate")
             api_end_time = self._parse_datetime(end_str)
             
-            # Use extracted date if available, otherwise use API date
-            end_time = extracted_date if extracted_date else api_end_time
-            
-            if not end_time:
+            if not api_end_time:
                 return None
             
-            # Skip if already ended or closed
+            # Try to extract resolution date from question text
+            # Only use if it's earlier than API date (for early-closing markets)
+            extracted_date = self._extract_date_from_question(question, now)
+            
+            # Prioritize API endDate, only use extracted if it's valid and earlier
+            if extracted_date and extracted_date < api_end_time:
+                end_time = extracted_date
+            else:
+                end_time = api_end_time
+            
+            # Skip if already ended or closed or in the past
             if market.get("closed", False):
                 return None
             
@@ -347,23 +366,45 @@ class CertaintyScanner:
             except Exception as e:
                 logger.error(f"Error fetching events with tag '{tag}': {e}")
         
-        # Also fetch without tag filter
-        try:
-            events = self.client.fetch_events(closed=False, limit=1000)
-            logger.info(f"Fetched {len(events)} total events")
-            
-            for event in events:
-                event_slug = event.get("slug", "")
-                markets = event.get("markets", [])
+        # Comprehensive scan: fetch ALL active events with pagination
+        if POLYMARKET_CONFIG.get("scan_all_active", True):
+            try:
+                max_pages = POLYMARKET_CONFIG.get("max_pages", 5)
+                limit = POLYMARKET_CONFIG.get("fetch_limit", 500)
+                all_events = []
                 
-                for market in markets:
-                    opp = self._parse_market(market, event_slug, now)
-                    if opp and self._qualifies(opp, max_hours, min_certainty, min_liquidity):
-                        # Avoid duplicates
-                        if not any(o.market_id == opp.market_id for o in opportunities):
+                for page in range(max_pages):
+                    offset = page * limit
+                    events = self.client.fetch_events(closed=False, limit=limit)
+                    logger.info(f"Fetched {len(events)} events (page {page + 1}/{max_pages})")
+                    
+                    if not events:
+                        break
+                    
+                    all_events.extend(events)
+                    
+                    # If we got fewer than limit, we've reached the end
+                    if len(events) < limit:
+                        break
+                
+                logger.info(f"Total events from comprehensive scan: {len(all_events)}")
+                
+                seen_ids = {o.market_id for o in opportunities}
+                for event in all_events:
+                    event_slug = event.get("slug", "")
+                    markets = event.get("markets", [])
+                    
+                    for market in markets:
+                        market_id = market.get("id", "")
+                        if market_id in seen_ids:
+                            continue
+                            
+                        opp = self._parse_market(market, event_slug, now)
+                        if opp and self._qualifies(opp, max_hours, min_certainty, min_liquidity):
                             opportunities.append(opp)
-        except Exception as e:
-            logger.error(f"Error fetching all events: {e}")
+                            seen_ids.add(opp.market_id)
+            except Exception as e:
+                logger.error(f"Error in comprehensive event scan: {e}")
         
         return opportunities
     
@@ -444,11 +485,11 @@ class CertaintyScanner:
         min_liquidity: float
     ) -> bool:
         """Check if an opportunity meets the criteria."""
-        # Time window check
-        if opp.hours_remaining > max_hours:
+        # Time window check: must be in future and within max_hours
+        if opp.hours_remaining <= 0 or opp.hours_remaining > max_hours:
             return False
         
-        # Certainty check (>=95% for Yes OR >=95% for No means No <= 5%)
+        # Certainty check (>=90% for Yes OR >=90% for No)
         if opp.certainty_pct < min_certainty:
             return False
         

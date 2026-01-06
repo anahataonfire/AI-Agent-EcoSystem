@@ -57,16 +57,41 @@ POLYMARKET_CONFIG = {
 
     
     # Additional tags to scan from standard events
+    # Expanded to cover all major categories for comprehensive discovery
     "target_tags": [
+        # Core markets
         "crypto",
         "crypto-prices",
         "recurring",
+        # Politics & World Events
         "politics",
         "geopolitics", 
         "world",
+        "elections",
+        "government",
+        # Finance & Economy
+        "finance",
+        "stocks",
+        "economics",
+        "central-banks",
+        # Tech & AI
+        "tech",
+        "ai",
+        "science",
+        # Entertainment & Sports
         "sports",
         "entertainment",
+        "culture",
+        # Other
+        "weather",
+        "legal",
     ],
+    
+    # Set to True to scan ALL active markets (ignores target_tags for broader discovery)
+    "scan_all_active": True,
+    
+    # Pagination for comprehensive fetches
+    "max_pages": 5,  # Max pagination iterations (5 x 500 = 2500 markets max)
 }
 
 # APR Calculation Constants
