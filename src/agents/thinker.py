@@ -177,11 +177,15 @@ def thinker_node(
     Returns:
         State update with current_plan containing the ProposedAction
     """
+    print("[THINKER-CORE] Starting thinker_node")
+    
     # Get LLM instance
     if llm is None:
         try:
             llm = get_llm()
+            print(f"[THINKER-CORE] LLM initialized: {type(llm).__name__}")
         except RuntimeError as e:
+            print(f"[THINKER-CORE] ERROR: LLM init failed: {e}")
             return {
                 "messages": [AIMessage(content=f"LLM initialization failed: {e}")]
             }
@@ -199,11 +203,15 @@ def thinker_node(
     history = [msg for msg in state.messages if not isinstance(msg, SystemMessage)]
     messages.extend(history)
     
+    print(f"[THINKER-CORE] Calling LLM with {len(messages)} messages")
+    
     # Call LLM
     try:
         response = llm.invoke(messages)
         response_content = response.content
+        print(f"[THINKER-CORE] LLM response: {response_content[:300]}...")
     except Exception as e:
+        print(f"[THINKER-CORE] ERROR: LLM call failed: {e}")
         return {
             "messages": [AIMessage(content=f"LLM call failed: {e}")]
         }
@@ -211,7 +219,9 @@ def thinker_node(
     # Parse response
     try:
         plan = parse_llm_response(response_content)
+        print(f"[THINKER-CORE] Parsed plan: {plan.get('tool_name', 'N/A')}")
     except json.JSONDecodeError as e:
+        print(f"[THINKER-CORE] ERROR: JSON parse failed: {e}")
         return {
             "messages": [AIMessage(
                 content=f"Failed to parse LLM response as JSON: {e}\n"
@@ -226,7 +236,9 @@ def thinker_node(
     # Validate against ProposedAction schema
     try:
         action = ProposedAction(**plan)
+        print(f"[THINKER-CORE] SUCCESS: Plan validated: {action.tool_name}")
     except Exception as e:
+        print(f"[THINKER-CORE] ERROR: Schema validation failed: {e}")
         return {
             "messages": [AIMessage(
                 content=f"Plan does not match ProposedAction schema: {e}\n"
@@ -241,3 +253,4 @@ def thinker_node(
         )],
         "current_plan": action.model_dump(),
     }
+
