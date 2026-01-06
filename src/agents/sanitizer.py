@@ -98,6 +98,11 @@ def sanitizer_node(state: RunState) -> Dict[str, Any]:
         - approved_action: The validated ProposedAction
         - messages: Rejection message if validation fails
     """
+    # DEBUG LOGGING
+    step = state.circuit_breaker.step_count
+    plan = state.current_plan.get("tool_name") if state.current_plan else "None"
+    print(f"[SANITIZER] Step={step}, Plan={plan}")
+    
     # No plan to validate - still increment step to prevent infinite loop
     if not state.current_plan:
         new_cb = state.circuit_breaker.increment_step()
@@ -112,11 +117,14 @@ def sanitizer_node(state: RunState) -> Dict[str, Any]:
     try:
         action = ProposedAction(**state.current_plan)
     except Exception as e:
+        new_cb = state.circuit_breaker.increment_step()
+        print(f"[SANITIZER] REJECT: parse error, step now {new_cb.step_count}")
         return {
             "messages": [HumanMessage(
                 content=f"Failed to parse plan into ProposedAction: {e}"
             )],
             "current_plan": None,
+            "circuit_breaker": new_cb,
         }
     
     # Step 2: Loop detection - compare fingerprints
@@ -125,7 +133,8 @@ def sanitizer_node(state: RunState) -> Dict[str, Any]:
     
     if current_fingerprint and current_fingerprint == previous_fingerprint:
         # Increment retry count for loop detection
-        new_cb = state.circuit_breaker.increment_retry()
+        new_cb = state.circuit_breaker.increment_retry().increment_step()
+        print(f"[SANITIZER] REJECT: loop detected, step now {new_cb.step_count}")
         
         if new_cb.should_trip():
             return {
@@ -154,22 +163,28 @@ def sanitizer_node(state: RunState) -> Dict[str, Any]:
         if url not in ALLOWED_SHORTCUTS:
             # Validate URL format
             if not is_valid_url_format(url):
+                new_cb = state.circuit_breaker.increment_step()
+                print(f"[SANITIZER] REJECT: invalid URL format, step now {new_cb.step_count}")
                 return {
                     "messages": [HumanMessage(
                         content=f"Invalid URL format: {url}. Must be HTTPS with valid domain."
                     )],
                     "current_plan": None,
+                    "circuit_breaker": new_cb,
                 }
         
         # Check allowlist (includes shortcuts)
         if not is_url_allowed(url):
             allowed_str = ", ".join(ALLOWLIST + ALLOWED_SHORTCUTS)
+            new_cb = state.circuit_breaker.increment_step()
+            print(f"[SANITIZER] REJECT: URL not allowed, step now {new_cb.step_count}")
             return {
                 "messages": [HumanMessage(
                     content=f"URL not in allowlist: {url}\n"
                             f"Allowed: {allowed_str}"
                 )],
                 "current_plan": None,
+                "circuit_breaker": new_cb,
             }
     # Step 4: Zero-Trust Validation for CompleteTask
     if action.tool_name == "CompleteTask":
@@ -184,6 +199,8 @@ def sanitizer_node(state: RunState) -> Dict[str, Any]:
                 # Update telemetry
                 telemetry = dict(state.telemetry)
                 telemetry["sanitizer_reject_count"] = telemetry.get("sanitizer_reject_count", 0) + 1
+                new_cb = state.circuit_breaker.increment_step()
+                print(f"[SANITIZER] REJECT: phantom IDs, step now {new_cb.step_count}")
                 
                 return {
                     "messages": [HumanMessage(
@@ -193,16 +210,20 @@ def sanitizer_node(state: RunState) -> Dict[str, Any]:
                     )],
                     "telemetry": telemetry,
                     "current_plan": None,
+                    "circuit_breaker": new_cb,
                 }
 
     # Step 5: Validate params against budget constraints
     is_valid, error_msg = validate_params(action.params)
     if not is_valid:
+        new_cb = state.circuit_breaker.increment_step()
+        print(f"[SANITIZER] REJECT: param validation, step now {new_cb.step_count}")
         return {
             "messages": [HumanMessage(
                 content=f"Parameter validation failed: {error_msg}"
             )],
             "current_plan": None,
+            "circuit_breaker": new_cb,
         }
     
     # All checks passed - approve the action
@@ -212,6 +233,7 @@ def sanitizer_node(state: RunState) -> Dict[str, Any]:
         "step_count": state.circuit_breaker.step_count + 1,
         "retry_count": 0,  # Reset retries on successful validation
     })
+    print(f"[SANITIZER] APPROVED: {action.tool_name}, step now {new_cb.step_count}")
     
     return {
         "messages": [HumanMessage(

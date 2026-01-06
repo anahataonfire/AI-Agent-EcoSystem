@@ -281,6 +281,14 @@ def pruned_thinker_node(state: RunState) -> Dict[str, Any]:
     """
     from src.core.identity_manager import serialize_for_prompt
     
+    # DEBUG LOGGING
+    step = state.circuit_breaker.step_count
+    plan = state.current_plan.get("tool_name") if state.current_plan else "None"
+    msg_count = len(state.messages)
+    last_msg = state.messages[-1].content[:100] if state.messages else "N/A"
+    print(f"[THINKER] Step={step}, Messages={msg_count}, Plan={plan}")
+    print(f"[THINKER] Last message: {last_msg}...")
+    
     CLARIFICATION_MARKER = "[[CLARIFICATION_REQUIRED]]"
     
     # Check for clarification follow-up (A/B response)
@@ -443,6 +451,11 @@ def executor_node(state: RunState) -> Dict[str, Any]:
     3. Stores results in the evidence store
     4. Returns updated state with tool results
     """
+    # DEBUG LOGGING
+    step = state.circuit_breaker.step_count
+    plan = state.current_plan.get("tool_name") if state.current_plan else "None"
+    print(f"[EXECUTOR] Step={step}, Executing={plan}")
+    
     # Get the approved action (set by sanitizer)
     approved_action = state.current_plan
     
@@ -1424,8 +1437,13 @@ def should_continue_after_thinker(state: RunState) -> Literal["sanitizer", "repo
     """
     Determine whether to continue processing or generate final report.
     """
+    # DEBUG LOGGING
+    step = state.circuit_breaker.step_count
+    print(f"[ROUTE after THINKER] Step={step}, HasPlan={state.current_plan is not None}")
+    
     # Check circuit breaker
     if state.circuit_breaker.should_trip():
+        print(f"[ROUTE] -> reporter (circuit breaker tripped)")
         return "reporter"
     
     # Check for termination signal in last message
