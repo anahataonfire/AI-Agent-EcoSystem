@@ -11,9 +11,9 @@ POLYMARKET_CONFIG = {
     "fetch_limit": 500,  # Max items per API request
     
     # Scanner Defaults
-    "default_time_window_hours": 4,  # Default: markets ending within 4 hours
-    "max_time_window_hours": 24,  # Maximum configurable window
-    "min_certainty_threshold": 0.95,  # 95% certainty (Yes >= 95% OR No >= 95%)
+    "default_time_window_hours": 24,  # Default: markets ending within 24 hours
+    "max_time_window_hours": 168,  # Maximum configurable window (1 week)
+    "min_certainty_threshold": 0.90,  # 90% certainty (Yes >= 90% OR No >= 90%)
     "min_liquidity_usd": 100,  # Minimum liquidity to consider
     
     # Target Series (recurring daily/hourly markets)
@@ -61,6 +61,11 @@ POLYMARKET_CONFIG = {
         "crypto",
         "crypto-prices",
         "recurring",
+        "politics",
+        "geopolitics", 
+        "world",
+        "sports",
+        "entertainment",
     ],
 }
 

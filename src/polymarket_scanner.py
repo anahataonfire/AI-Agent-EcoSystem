@@ -183,6 +183,45 @@ class CertaintyScanner:
             logger.warning(f"Could not parse datetime: {date_str}")
             return None
     
+    def _extract_date_from_question(self, question: str, now: datetime) -> Optional[datetime]:
+        """
+        Extract resolution date from question text for multi-market events.
+        
+        Examples:
+        - "Another US strike on Venezuela on January 6?" -> 2026-01-06
+        - "Will ETH close above $X on December 17?" -> 2025/2026-12-17
+        """
+        import re
+        
+        # Pattern: "on/by January 6" or "on December 17"
+        MONTHS = {
+            'january': 1, 'february': 2, 'march': 3, 'april': 4,
+            'may': 5, 'june': 6, 'july': 7, 'august': 8,
+            'september': 9, 'october': 10, 'november': 11, 'december': 12
+        }
+        
+        pattern = r'(?:on|by)\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})'
+        match = re.search(pattern, question.lower())
+        
+        if match:
+            month_name = match.group(1)
+            day = int(match.group(2))
+            month = MONTHS.get(month_name)
+            
+            if month:
+                # Assume current year, or next year if the date has passed
+                year = now.year
+                try:
+                    target = datetime(year, month, day, 23, 59, 59, tzinfo=timezone.utc)
+                    if target < now:
+                        # Could be next year, but for already-passed dates, return None
+                        return None
+                    return target
+                except ValueError:
+                    return None
+        
+        return None
+    
     def _parse_market(
         self, 
         market: Dict, 
@@ -191,9 +230,20 @@ class CertaintyScanner:
     ) -> Optional[Opportunity]:
         """Parse a market dict into an Opportunity if it qualifies."""
         try:
-            # Get end date
+            # Get question text for potential date extraction
+            question = market.get("question", "")
+            
+            # Try to extract resolution date from question text
+            # This handles multi-market events like "US strike on January 6?"
+            extracted_date = self._extract_date_from_question(question, now)
+            
+            # Get end date from API (fallback if question doesn't have explicit date)
             end_str = market.get("endDate")
-            end_time = self._parse_datetime(end_str)
+            api_end_time = self._parse_datetime(end_str)
+            
+            # Use extracted date if available, otherwise use API date
+            end_time = extracted_date if extracted_date else api_end_time
+            
             if not end_time:
                 return None
             
