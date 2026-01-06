@@ -32,7 +32,7 @@ ALLOWLIST = [
 ALLOWED_SHORTCUTS = ["google_news", "reddit_search"]
 
 # Budget constraints
-MAX_ITEMS_LIMIT = 25
+MAX_ITEMS_LIMIT = 50
 MAX_TIMEOUT_SEC = 30
 
 

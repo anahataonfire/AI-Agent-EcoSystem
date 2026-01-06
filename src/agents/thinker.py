@@ -58,7 +58,7 @@ def build_system_prompt(skills: list[str] = None) -> str:
         skills: List of skill names to load. Defaults to ['skill_planning_basic']
     """
     if skills is None:
-        skills = ["skill_planning_basic", "skill_identity_usage"]
+        skills = ["skill_planning_basic", "skill_deep_research", "skill_identity_usage"]
     
     # Load skill content
     skill_content = []

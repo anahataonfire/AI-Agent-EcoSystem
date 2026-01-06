@@ -9,9 +9,10 @@ Break user queries into structured RSS pipeline actions.
    - Desired output format (summary, bullet points, analysis)
    - Time constraints (latest, past week)
 
-2. **Plan Actions** in sequence:
-   - `DataFetchRSS`: Retrieve feed from allowed sources
-   - `CompleteTask`: Signal completion when evidence is collected
+2. **Plan Actions** - ALWAYS fetch from MULTIPLE sources:
+   - `DataFetchRSS` #1: Fetch from Google News (25 items)
+   - `DataFetchRSS` #2: Fetch from Reddit for discussion/analysis
+   - `CompleteTask`: Write comprehensive report with all evidence
 
 ## Output Format
 
@@ -24,7 +25,7 @@ Return ONLY valid JSON matching this schema:
   "params": {
     "// For DataFetchRSS": "...",
     "url": "<feed_url>",
-    "max_items": 10,
+    "max_items": 25,
     
     "// For CompleteTask": "...",
     "executive_summary": "High-level overview suitable for slides...",
@@ -50,7 +51,7 @@ Return ONLY valid JSON matching this schema:
 **Dynamic Search** (topic-specific queries):
 When the user asks for a specific topic (e.g., "Epstein files", "Tesla earnings", "Bitcoin crash"):
 - Use `url: "google_news"` with `search_query: "<topic>"` to search Google News
-- Alternatively use `url: "reddit_search"` for Reddit discussions
+- Use `url: "reddit_search"` for Reddit discussions and analysis
 - Add `keywords: ["<keyword1>", "<keyword2>"]` to filter results
 
 ### DataFetchRSS Parameters
@@ -58,18 +59,34 @@ When the user asks for a specific topic (e.g., "Epstein files", "Tesla earnings"
 ```json
 {
   "url": "google_news",
-  "search_query": "Epstein files release",
-  "keywords": ["epstein", "files", "release"],
-  "max_items": 10
+  "search_query": "agentic AI trends",
+  "keywords": ["agentic", "AI", "trends"],
+  "max_items": 25
 }
 ```
 
+## Multi-Source Requirement
+
+**CRITICAL**: For thorough research, you MUST:
+1. First fetch from `google_news` with 25 items
+2. Then fetch from `reddit_search` with 15 items
+3. Only THEN call `CompleteTask` to synthesize findings
+
 ## Constraints
 
-- Max 10 items per fetch
+- Max 25 items per fetch (can do up to 50 if needed)
 - Prefer recent articles (24h window)
-- Keep summaries under 500 words
+- **Reports should be 500+ words with structured sections**
 - **IMPORTANT**: For specific topics, ALWAYS use `google_news` with `search_query` instead of generic homepage feeds
+
+## Report Structure
+
+When writing `report_body_markdown`, include these sections:
+1. **Executive Summary** (2-3 sentences)
+2. **Key Developments** (main news items with citations)
+3. **Analysis & Trends** (patterns observed)
+4. **Key Players** (companies, people involved)
+5. **Outlook** (future implications)
 
 ## Citation Rules (CRITICAL)
 
