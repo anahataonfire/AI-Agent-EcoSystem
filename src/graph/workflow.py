@@ -1542,7 +1542,7 @@ def run_pipeline(user_query: str) -> Dict[str, Any]:
     )
     
     # Run the graph
-    final_state = app.invoke(initial_state, {"recursion_limit": 60})
+    final_state = app.invoke(initial_state, {"recursion_limit": 120})
     
     return final_state
 

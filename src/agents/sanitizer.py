@@ -98,12 +98,14 @@ def sanitizer_node(state: RunState) -> Dict[str, Any]:
         - approved_action: The validated ProposedAction
         - messages: Rejection message if validation fails
     """
-    # No plan to validate
+    # No plan to validate - still increment step to prevent infinite loop
     if not state.current_plan:
+        new_cb = state.circuit_breaker.increment_step()
         return {
             "messages": [HumanMessage(
                 content="No plan provided to sanitize."
-            )]
+            )],
+            "circuit_breaker": new_cb,
         }
     
     # Step 1: Parse into ProposedAction

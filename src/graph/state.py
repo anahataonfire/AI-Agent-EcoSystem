@@ -49,7 +49,7 @@ class CircuitBreaker(BaseModel):
         description="Hash of the last plan to detect loops"
     )
     max_steps: int = Field(
-        default=50,
+        default=100,
         description="Maximum allowed steps before circuit trips"
     )
     max_retries: int = Field(
