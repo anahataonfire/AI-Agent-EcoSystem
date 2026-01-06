@@ -54,6 +54,14 @@ POLYMARKET_CONFIG = {
         "cl-daily-up-or-down",   # Crude Oil
         "brent-crude-oil-daily-up-or-down",
     ],
+    
+    # Crypto tokens to search for daily "up-or-down-on-[date]" events
+    # These generate unique events each day that aren't part of a series
+    "crypto_daily_tokens": [
+        "xrp", "btc", "bitcoin", "eth", "ethereum", "solana", "sol",
+        "dogecoin", "doge", "cardano", "ada", "bnb", "avax", "link",
+        "matic", "polkadot", "dot", "shib", "ltc", "atom", "uni",
+    ],
 
     
     # Additional tags to scan from standard events

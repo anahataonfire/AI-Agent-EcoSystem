@@ -110,15 +110,23 @@ class PolymarketClient:
         self, 
         closed: bool = False, 
         limit: int = None,
-        tag: str = None
+        tag: str = None,
+        order: str = None,
+        ascending: bool = True,
+        offset: int = None
     ) -> List[Dict]:
-        """Fetch events from the API."""
+        """Fetch events from the API with optional ordering and pagination."""
         params = {
             "closed": str(closed).lower(),
             "limit": limit or POLYMARKET_CONFIG["fetch_limit"],
         }
         if tag:
             params["tag"] = tag
+        if order:
+            params["order"] = order
+            params["ascending"] = str(ascending).lower()
+        if offset:
+            params["offset"] = offset
         
         return self._make_request("/events", params)
     
@@ -417,6 +425,34 @@ class CertaintyScanner:
             except Exception as e:
                 logger.error(f"Error in comprehensive event scan: {e}")
         
+        # Fetch RECENT events (ordered by startDate desc) to catch new markets
+        # This is critical for finding new daily crypto markets like XRP
+        try:
+            recent_events = self.client.fetch_events(
+                closed=False, 
+                limit=500, 
+                order="startDate", 
+                ascending=False
+            )
+            logger.info(f"Fetched {len(recent_events)} recent events (by startDate desc)")
+            
+            seen_ids = {o.market_id for o in opportunities}
+            for event in recent_events:
+                event_slug = event.get("slug", "")
+                markets = event.get("markets", [])
+                
+                for market in markets:
+                    market_id = market.get("id", "")
+                    if market_id in seen_ids:
+                        continue
+                        
+                    opp = self._parse_market(market, event_slug, now)
+                    if opp and self._qualifies(opp, max_hours, min_certainty, min_liquidity):
+                        opportunities.append(opp)
+                        seen_ids.add(opp.market_id)
+        except Exception as e:
+            logger.error(f"Error fetching recent events: {e}")
+        
         return opportunities
     
     def scan_series(
@@ -538,6 +574,7 @@ class CertaintyScanner:
         opportunities = []
         opportunities.extend(self.scan_events(max_hours, min_certainty, min_liquidity, now))
         opportunities.extend(self.scan_series(max_hours, min_certainty, min_liquidity, now))
+        opportunities.extend(self.scan_crypto_daily(max_hours, min_certainty, min_liquidity, now))
         
         # Remove duplicates by market_id
         seen = set()
@@ -552,6 +589,57 @@ class CertaintyScanner:
         
         logger.info(f"Scan complete: found {len(unique)} opportunities")
         return unique
+    
+    def scan_crypto_daily(
+        self,
+        max_hours: float,
+        min_certainty: float,
+        min_liquidity: float,
+        now: datetime
+    ) -> List[Opportunity]:
+        """
+        Scan for daily crypto "up-or-down-on-[date]" events.
+        
+        These events have unique slugs for each day (e.g., xrp-up-or-down-on-january-6)
+        and often don't appear in the standard event list due to pagination limits.
+        """
+        opportunities = []
+        tokens = POLYMARKET_CONFIG.get("crypto_daily_tokens", [])
+        
+        # Generate today's and tomorrow's date patterns
+        from datetime import timedelta
+        dates_to_check = []
+        for days_ahead in range(3):  # Check today, tomorrow, day after
+            date = now + timedelta(days=days_ahead)
+            month_name = date.strftime("%B").lower()
+            day = date.day
+            dates_to_check.append(f"{month_name}-{day}")
+            dates_to_check.append(f"on-{month_name}-{day}")
+        
+        for token in tokens:
+            for date_pattern in dates_to_check:
+                # Try common slug patterns
+                patterns = [
+                    f"{token}-up-or-down-{date_pattern}",
+                    f"{token}-up-or-down-on-{date_pattern.replace('on-', '')}",
+                ]
+                
+                for slug in patterns:
+                    try:
+                        event = self.client.fetch_event_by_slug(slug)
+                        if event:
+                            event_slug = event.get("slug", "")
+                            markets = event.get("markets", [])
+                            
+                            for market in markets:
+                                opp = self._parse_market(market, event_slug, now)
+                                if opp and self._qualifies(opp, max_hours, min_certainty, min_liquidity):
+                                    opportunities.append(opp)
+                                    logger.info(f"Found crypto daily: {opp.question}")
+                    except Exception:
+                        pass  # Slug doesn't exist
+        
+        return opportunities
 
 
 def format_opportunity(opp: Opportunity, index: int = 1) -> str:
