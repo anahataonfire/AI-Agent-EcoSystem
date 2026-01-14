@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.graph.workflow import create_workflow, RunState
 from langchain_core.messages import HumanMessage
 
-load_dotenv()
+load_dotenv(override=True)
 
 def debug_pipeline(query: str):
     app = create_workflow().compile()

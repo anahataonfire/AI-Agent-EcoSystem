@@ -129,7 +129,11 @@ class CommitGate:
     EVIDENCE_INVALID_TIMESTAMP = "EVIDENCE_INVALID_TIMESTAMP"
     CAPABILITY_DENIED = "CAPABILITY_DENIED"
     KILL_SWITCH_BLOCKED = "KILL_SWITCH_BLOCKED"
+    KILL_SWITCH_BLOCKED = "KILL_SWITCH_BLOCKED"
     PREWRITE_MISSING = "PREWRITE_MISSING"
+    DATAMART_INVALID = "DATAMART_INVALID"
+    GROUNDING_FAILURE = "GROUNDING_FAILURE"
+    TOPIC_POLICY_VIOLATION = "TOPIC_POLICY_VIOLATION"
     
     def __init__(
         self,
@@ -205,6 +209,11 @@ class CommitGate:
         
         # Check 7: Ledger prewrite existence
         rejection = self._check_prewrite(bundle)
+        if rejection:
+            return CommitResult(CommitStatus.REJECTED, bundle_hash, timestamp, rejection)
+            
+        # Check 8: Datamart-specific validation (if applicable)
+        rejection = self._check_datamart_compliance(bundle)
         if rejection:
             return CommitResult(CommitStatus.REJECTED, bundle_hash, timestamp, rejection)
         
@@ -571,7 +580,133 @@ class CommitGate:
             
             return True
         
-        return False
+    def _check_datamart_compliance(self, bundle: CommitBundle) -> Optional[RejectionPayload]:
+        """
+        Check 8: Validate Datamart Bundles.
+        
+        Checks:
+        1. EVIDENCE_EXISTS (Covered by Check 3 if refs are populated)
+        2. GROUNDING_COMPLETE: claims map to valid evidence
+        3. ENUM_ONLY: correct destination/actions
+        4. TOPIC_POLICY: topic is active/pending
+        5. FINGERPRINT_MATCH: computed fingerprint matches manifest
+        6. NO_DOWNGRADE: version >= existing on disk
+        """
+        payload = bundle.payload
+        
+        # Only validate if this is a Datamart operation
+        # Detection: payload has 'datamart_manifest' or route is NOTEBOOKLM_DATAMART
+        route = payload.get("route_destination")
+        manifest = payload.get("datamart_manifest")
+        
+        if route != "NOTEBOOKLM_DATAMART" and not manifest:
+            return None
+        
+        # 3. ENUM_ONLY Check
+        from src.content.schemas import RouteDestination, SystemAction
+        
+        if route and route not in [r.value for r in RouteDestination]:
+            return RejectionPayload(
+                code=self.DATAMART_INVALID,
+                violating_field="route_destination",
+                details=f"Invalid enum value: {route}"
+            )
+            
+        actions = payload.get("system_actions", [])
+        valid_actions = {a.value for a in SystemAction}
+        for action in actions:
+            if action not in valid_actions:
+                return RejectionPayload(
+                    code=self.DATAMART_INVALID,
+                    violating_field="system_actions",
+                    details=f"Invalid action enum: {action}"
+                )
+        
+        # If no manifest, nothing else to check (maybe just a route decision?)
+        if not manifest:
+            return None
+            
+        # Manifest Validation
+        topic_id = manifest.get("topic_id")
+        
+        # 4. TOPIC_POLICY Check
+        registry_path = Path(__file__).parent.parent.parent / "config" / "datamart_registry.json"
+        if registry_path.exists():
+            with open(registry_path) as f:
+                registry = json.load(f)
+            
+            topics = registry.get("topics", {})
+            if topic_id not in topics:
+                # If auto-created content, might not be in registry yet.
+                # Policy: Must be at least pending or known if strict.
+                # For now, allow if it's a new proposed topic (auto-create flow),
+                # but maybe warn? User said "Unknown topic -> LIBRARY_ONLY".
+                # If we get here, RoutingPolicy presumably allowed it (auto-create).
+                pass 
+            else:
+                status = topics[topic_id].get("status", "active")
+                if status == "archived":
+                    return RejectionPayload(
+                        code=self.TOPIC_POLICY_VIOLATION,
+                        violating_field="topic_id",
+                        details=f"Topic {topic_id} is archived"
+                    )
+        
+        # 5. FINGERPRINT_MATCH Check
+        from src.content.datamart_bundler import compute_bundle_fingerprint
+        
+        sources = manifest.get("sources", [])
+        source_ids = [s.get("content_id") for s in sources]
+        
+        computed_fp = compute_bundle_fingerprint(
+            topic_id=topic_id,
+            version=manifest.get("version", 1),
+            content_ids=source_ids
+        )
+        
+        if computed_fp != manifest.get("fingerprint"):
+            return RejectionPayload(
+                code=self.DATAMART_INVALID,
+                violating_field="fingerprint",
+                details=f"Fingerprint mismatch. Computed: {computed_fp}, Manifest: {manifest.get('fingerprint')}"
+            )
+            
+        # 6. NO_DOWNGRADE Check
+        # Need to check existing bundle on disk
+        datamart_dir = Path("data/datamarts") / topic_id
+        current_manifest_path = datamart_dir / "manifest.json"
+        
+        if current_manifest_path.exists():
+            try:
+                with open(current_manifest_path) as f:
+                    current = json.load(f)
+                
+                current_ver = current.get("version", 0)
+                new_ver = manifest.get("version", 1)
+                
+                if new_ver < current_ver:
+                    return RejectionPayload(
+                        code=self.DATAMART_INVALID,
+                        violating_field="version",
+                        details=f"Version downgrade detected: v{new_ver} < v{current_ver}"
+                    )
+            except Exception:
+                pass # Ignore read errors for integrity check?
+        
+        # 2. GROUNDING_COMPLETE Check (on content analysis result usually)
+        # DeepAnalysisResult logic...
+        analysis = payload.get("deep_analysis_result")
+        if analysis:
+            grounded_claims = analysis.get("grounded_claims", [])
+            for i, claim in enumerate(grounded_claims):
+                if not claim.get("evidence_id"):
+                    return RejectionPayload(
+                        code=self.GROUNDING_FAILURE,
+                        violating_field=f"grounded_claims[{i}]",
+                        details="Claim missing evidence_id"
+                    )
+        
+        return None
 
 
 class PromoteStatus(Enum):

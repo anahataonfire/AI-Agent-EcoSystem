@@ -28,6 +28,10 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Load .env with override=True so it takes priority over shell environment
+from dotenv import load_dotenv
+load_dotenv(PROJECT_ROOT / ".env", override=True)
+
 # Import from control_plane to avoid duplicate definitions
 from src.control_plane.state import SystemState
 
@@ -328,6 +332,100 @@ def cmd_run(args) -> int:
         print(f"  Output: {result.output_path}")
     
     return 0 if result.success else 1
+
+
+def cmd_health(args) -> int:
+    """
+    Check system health: databases, LLM, API connectivity.
+    
+    Returns 0 if all checks pass, 1 if any check fails.
+    """
+    import sqlite3
+    import requests
+    from src.core.llm_config import validate_llm_connectivity
+    
+    print("\n" + "=" * 50)
+    print("DTL System Health Check")
+    print("=" * 50 + "\n")
+    
+    all_healthy = True
+    
+    # Check 1: Content Database
+    content_db = PROJECT_ROOT / "data" / "content" / "content.db"
+    try:
+        if content_db.exists():
+            conn = sqlite3.connect(content_db)
+            count = conn.execute("SELECT COUNT(*) FROM content").fetchone()[0]
+            conn.close()
+            print(f"✓ Content DB: {count} entries")
+        else:
+            print(f"✗ Content DB: Not found at {content_db}")
+            all_healthy = False
+    except Exception as e:
+        print(f"✗ Content DB: Error - {e}")
+        all_healthy = False
+    
+    # Check 2: Evidence Store
+    evidence_db = PROJECT_ROOT / "data" / "evidence_store.db"
+    try:
+        if evidence_db.exists():
+            conn = sqlite3.connect(evidence_db)
+            count = conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0]
+            conn.close()
+            print(f"✓ Evidence Store: {count} entries")
+        else:
+            print(f"✗ Evidence Store: Not found")
+            all_healthy = False
+    except Exception as e:
+        print(f"✗ Evidence Store: Error - {e}")
+        all_healthy = False
+    
+    # Check 3: Planner Tasks
+    planner_db = PROJECT_ROOT / "data" / "planner_tasks.db"
+    try:
+        if planner_db.exists():
+            conn = sqlite3.connect(planner_db)
+            count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+            conn.close()
+            print(f"✓ Planner DB: {count} tasks")
+        else:
+            print(f"⚠ Planner DB: Not found (optional)")
+    except Exception as e:
+        print(f"⚠ Planner DB: {e} (optional)")
+    
+    # Check 4: LLM Connectivity (CRITICAL)
+    print("\nLLM Connectivity:")
+    llm_status = validate_llm_connectivity()
+    if llm_status.is_healthy():
+        print(f"✓ LLM: {llm_status.model} - {llm_status.message}")
+    elif llm_status.status == "unconfigured":
+        print(f"✗ LLM: UNCONFIGURED - {llm_status.message}")
+        all_healthy = False
+    else:
+        print(f"✗ LLM: ERROR - {llm_status.message}")
+        all_healthy = False
+    
+    # Check 5: API Server
+    print("\nAPI Server:")
+    try:
+        response = requests.get("http://localhost:8000/", timeout=2)
+        if response.status_code == 200:
+            print(f"✓ API Server: Running at http://localhost:8000")
+        else:
+            print(f"⚠ API Server: Status {response.status_code}")
+    except requests.exceptions.ConnectionError:
+        print("⚠ API Server: Not running (optional)")
+    except Exception as e:
+        print(f"⚠ API Server: {e}")
+    
+    # Summary
+    print("\n" + "=" * 50)
+    if all_healthy:
+        print("✓ All critical systems healthy")
+        return 0
+    else:
+        print("✗ Some critical systems need attention")
+        return 1
 
 
 def cmd_status(args) -> int:
@@ -808,6 +906,427 @@ def cmd_content_status(args) -> int:
     return 0
 
 
+# =============================================================================
+# Datamart Commands
+# =============================================================================
+
+def cmd_datamart_sync(args) -> int:
+    """Sync datamart bundles to a destination folder (e.g., Google Drive)."""
+    import shutil
+    from src.content.datamart_bundler import DatamartBundler
+    
+    bundler = DatamartBundler()
+    
+    # Default destination
+    dest_base = Path(args.dest) if args.dest else Path.home() / "Google Drive" / "NotebookLM"
+    
+    if args.topic_id:
+        # Sync single topic
+        topics = [args.topic_id]
+    else:
+        # Sync all active bundles
+        bundles = bundler.list_bundles(include_archived=False)
+        topics = [b.topic_id for b in bundles]
+    
+    if not topics:
+        print("No datamart bundles found to sync.")
+        return 0
+    
+    print(f"\n{'[DRY RUN] ' if args.dry_run else ''}Datamart Sync")
+    print(f"Destination: {dest_base}")
+    print(f"Topics: {len(topics)}")
+    print()
+    
+    synced_count = 0
+    for topic_id in topics:
+        summary = bundler.get_sync_summary(topic_id)
+        if "error" in summary:
+            print(f"  ✗ {topic_id}: {summary['error']}")
+            continue
+        
+        src_path = Path(summary["bundle_path"])
+        dest_path = dest_base / topic_id
+        
+        print(f"  {topic_id}:")
+        print(f"    Version: v{summary['version']} | Sources: {summary['source_count']}")
+        print(f"    Fingerprint: {summary['fingerprint'][:32]}...")
+        print(f"    Files: {len(summary['files'])}")
+        
+        if args.dry_run:
+            print(f"    → Would sync to: {dest_path}")
+        else:
+            # Create destination and copy files
+            dest_path.mkdir(parents=True, exist_ok=True)
+            (dest_path / "sources").mkdir(exist_ok=True)
+            
+            for file_rel in summary["files"]:
+                src_file = src_path / file_rel
+                dst_file = dest_path / file_rel
+                if src_file.exists():
+                    shutil.copy2(src_file, dst_file)
+            
+            print(f"    ✓ Synced to: {dest_path}")
+            synced_count += 1
+    
+    print()
+    if args.dry_run:
+        print(f"Dry run complete. {len(topics)} bundle(s) would sync.")
+    else:
+        print(f"Sync complete. {synced_count} bundle(s) synced.")
+    
+    return 0
+
+
+def cmd_datamarts(args) -> int:
+    """List all datamart bundles."""
+    from src.content.datamart_bundler import DatamartBundler
+    
+    bundler = DatamartBundler()
+    bundles = bundler.list_bundles(include_archived=args.include_archived)
+    
+    print("\nDatamart Bundles:")
+    
+    if not bundles:
+        print("  (none)")
+        return 0
+    
+    for b in bundles:
+        status_icon = "📦" if b.status == "active" else "📁"
+        print(f"\n  {status_icon} [{b.topic_id}] {b.topic_name}")
+        print(f"     Version: v{b.version} | Sources: {b.source_count}")
+        print(f"     Tags: {', '.join(b.tags) if b.tags else '(none)'}")
+        print(f"     Updated: {b.updated_at[:10]}")
+    
+    return 0
+
+
+def cmd_datamart_show(args) -> int:
+    """Show details for a specific datamart bundle."""
+    from src.content.datamart_bundler import DatamartBundler
+    
+    bundler = DatamartBundler()
+    manifest = bundler.read_manifest(args.topic_id)
+    
+    if not manifest:
+        print(f"Error: Bundle not found: {args.topic_id}")
+        return 1
+    
+    print(f"\nDatamart: {manifest.topic_name}")
+    print(f"  Topic ID: {manifest.topic_id}")
+    print(f"  Bundle ID: {manifest.bundle_id}")
+    print(f"  Version: v{manifest.version}")
+    print(f"  Status: {manifest.status}")
+    print(f"  Fingerprint: {manifest.fingerprint}")
+    print(f"  Created: {manifest.created_at}")
+    print(f"  Updated: {manifest.updated_at}")
+    
+    if manifest.parent_topic_id:
+        print(f"  Parent: {manifest.parent_topic_id}")
+    
+    if manifest.tags:
+        print(f"  Tags: {', '.join(manifest.tags)}")
+    
+    print(f"\n  Sources ({manifest.source_count}):")
+    for s in manifest.sources[:10]:  # Limit to 10
+        print(f"    - [{s.content_id}] {s.title[:50]}")
+        print(f"      Relevance: {s.relevance_score:.2f} | Added: {s.added_at[:10]}")
+    
+    if manifest.source_count > 10:
+        print(f"    ... and {manifest.source_count - 10} more")
+    
+    return 0
+
+
+def cmd_datamart_create(args) -> int:
+    """Create a new datamart bundle."""
+    import re
+    from src.content.datamart_bundler import DatamartBundler
+    
+    topic_id = args.topic_id
+    
+    # Validate topic_id format
+    if not re.match(r'^[a-z0-9-]+$', topic_id):
+        print("Error: Topic ID must be lowercase letters, numbers, and hyphens only")
+        return 1
+    
+    bundler = DatamartBundler()
+    
+    if bundler.bundle_exists(topic_id):
+        print(f"Error: Bundle already exists: {topic_id}")
+        return 1
+    
+    tags = [t.strip() for t in args.tags.split(",")] if args.tags else []
+    
+    manifest = bundler.create_bundle(
+        topic_id=topic_id,
+        topic_name=args.name,
+        tags=tags,
+    )
+    
+    print(f"\n✓ Created datamart bundle:")
+    print(f"  Topic ID: {manifest.topic_id}")
+    print(f"  Name: {manifest.topic_name}")
+    print(f"  Bundle ID: {manifest.bundle_id}")
+    if tags:
+        print(f"  Tags: {', '.join(tags)}")
+    
+    return 0
+
+
+def cmd_datamart_approve(args) -> int:
+    """Approve a pending datamart topic."""
+    import json
+    
+    registry_path = Path(PROJECT_ROOT) / "config" / "datamart_registry.json"
+    if not registry_path.exists():
+        print("Error: Registry not found")
+        return 1
+        
+    with open(registry_path, 'r') as f:
+        registry = json.load(f)
+    
+    topic_id = args.topic_id
+    if topic_id not in registry.get("topics", {}):
+        print(f"Error: Topic '{topic_id}' not found in registry")
+        return 1
+    
+    topic = registry["topics"][topic_id]
+    if topic.get("status") == "active":
+        print(f"Topic '{topic_id}' is already active.")
+        return 0
+    
+    # Approve
+    topic["status"] = "active"
+    topic["approved_at"] = datetime.now(timezone.utc).isoformat()
+    
+    with open(registry_path, 'w') as f:
+        json.dump(registry, f, indent=4)
+        
+    print(f"✓ Topic '{topic_id}' approved and activated.")
+    return 0
+
+
+def cmd_datamart_rebuild(args) -> int:
+    """Rebuild a datamart bundle from source truth."""
+    from src.content.datamart_bundler import DatamartBundler
+    from src.content.store import ContentStore
+    
+    topic_id = args.topic_id
+    bundler = DatamartBundler()
+    store = ContentStore()
+    
+    if not bundler.bundle_exists(topic_id):
+        print(f"Error: Bundle '{topic_id}' not found.")
+        return 1
+    
+    print(f"Rebuilding bundle: {topic_id}")
+    
+    # 1. Read current manifest to get source IDs
+    manifest = bundler.read_manifest(topic_id)
+    source_ids = [s.content_id for s in manifest.sources]
+    print(f"  Found {len(source_ids)} sources in manifest.")
+    
+    # 2. Fetch fresh content from Store
+    refreshed_sources = []
+    missing_ids = []
+    
+    for cid in source_ids:
+        entry = store.read(cid)
+        if not entry:
+            missing_ids.append(cid)
+            continue
+            
+        # Re-construct DatamartSource from fresh ContentEntry
+        from src.content.datamart_bundler import DatamartSource
+        ds = DatamartSource(
+            content_id=entry.id,
+            url=entry.url,
+            title=entry.title,
+            relevance_score=entry.relevance_score,
+            summary=entry.summary,
+            added_at=entry.created_at, # Keep original added_at or update? logic implies freshness
+            categories=entry.categories
+        )
+        # We need to preserve the original added_at if possible, strictly "rebuild" might imply using current data
+        # For this implementation, we use current store data.
+        refreshed_sources.append((ds, entry.raw_content))
+    
+    if missing_ids:
+        print(f"  Warning: {len(missing_ids)} sources missing from ContentStore (skipping): {missing_ids}")
+    
+    # 3. Re-write bundle
+    # We use internal methods or just re-add sources? 
+    # Better to wipe sourcesdir and re-add.
+    # Bundler doesn't expose "wipe".
+    # We can use add_source to overwrite.
+    
+    updated_count = 0
+    for ds, raw_content in refreshed_sources:
+        bundler.add_source(
+            topic_id=topic_id,
+            content_id=ds.content_id,
+            url=ds.url,
+            title=ds.title,
+            relevance_score=ds.relevance_score,
+            summary=ds.summary,
+            categories=ds.categories,
+            raw_content=raw_content
+        )
+        updated_count += 1
+        
+    print(f"  ✓ Refreshed {updated_count} sources.")
+    
+    # 4. Verify fingerprint
+    new_manifest = bundler.read_manifest(topic_id)
+    print(f"  New Fingerprint: {new_manifest.fingerprint}")
+    
+    return 0
+
+
+def cmd_datamart_health(args) -> int:
+    """Print a Datamart Health Report."""
+    from pathlib import Path
+    from datetime import datetime, timezone, timedelta
+    import re
+    
+    from src.content.datamart_bundler import DatamartBundler
+    from src.content.store import ContentStore
+    
+    PROJECT_ROOT = Path(__file__).parent.parent
+    
+    print("=" * 60)
+    print("            DATAMART HEALTH REPORT")
+    print(f"            Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    print("=" * 60)
+    
+    # 1. Load registry and count by status
+    registry_path = PROJECT_ROOT / "config" / "datamart_registry.json"
+    registry = {}
+    if registry_path.exists():
+        with open(registry_path) as f:
+            registry = json.load(f).get("topics", {})
+    
+    status_counts = {"active": 0, "pending": 0, "archived": 0}
+    for topic_id, meta in registry.items():
+        status = meta.get("status", "unknown")
+        if status in status_counts:
+            status_counts[status] += 1
+        else:
+            status_counts[status] = status_counts.get(status, 0) + 1
+    
+    print("\n[1] TOPIC STATUS")
+    print(f"    Active:   {status_counts.get('active', 0)}")
+    print(f"    Pending:  {status_counts.get('pending', 0)}")
+    print(f"    Archived: {status_counts.get('archived', 0)}")
+    
+    # 2. Last Sync Time & Outcome
+    log_path = PROJECT_ROOT / "logs" / "datamart_sync.log"
+    last_sync_time = "Never"
+    last_sync_outcome = "Unknown"
+    
+    if log_path.exists():
+        lines = log_path.read_text().strip().split("\n")
+        for line in reversed(lines):
+            if "Sync Complete. Success" in line:
+                last_sync_outcome = "SUCCESS"
+                match = re.search(r"\[(.*?)\]", line)
+                if match:
+                    last_sync_time = match.group(1)
+                break
+            elif "Sync Failed" in line:
+                last_sync_outcome = "FAILED"
+                match = re.search(r"\[(.*?)\]", line)
+                if match:
+                    last_sync_time = match.group(1)
+                break
+    
+    print("\n[2] LAST SYNC")
+    print(f"    Time:    {last_sync_time}")
+    print(f"    Outcome: {last_sync_outcome}")
+    
+    # 3. Top 10 Topics by Source Count
+    bundler = DatamartBundler()
+    topic_source_counts = []
+    
+    datamarts_dir = bundler.base_path
+    if datamarts_dir.exists():
+        for topic_dir in datamarts_dir.iterdir():
+            if topic_dir.is_dir():
+                manifest = bundler.read_manifest(topic_dir.name)
+                if manifest:
+                    topic_source_counts.append((topic_dir.name, len(manifest.sources)))
+    
+    topic_source_counts.sort(key=lambda x: x[1], reverse=True)
+    
+    print("\n[3] TOP TOPICS BY SOURCE COUNT")
+    if topic_source_counts:
+        for i, (tid, count) in enumerate(topic_source_counts[:10], 1):
+            print(f"    {i:2}. {tid}: {count} sources")
+    else:
+        print("    (No bundles found)")
+    
+    # 4. Fingerprint Mismatch Check
+    print("\n[4] FINGERPRINT VALIDATION")
+    mismatch_count = 0
+    for topic_dir in (datamarts_dir.iterdir() if datamarts_dir.exists() else []):
+        if topic_dir.is_dir():
+            manifest = bundler.read_manifest(topic_dir.name)
+            if manifest:
+                # Recalculate fingerprint
+                sources_dir = topic_dir / "sources"
+                current_hash = ""
+                if sources_dir.exists():
+                    file_hashes = []
+                    for f in sorted(sources_dir.glob("*.md")):
+                        file_hashes.append(hashlib.sha256(f.read_bytes()).hexdigest())
+                    if file_hashes:
+                        current_hash = hashlib.sha256(":".join(file_hashes).encode()).hexdigest()[:16]
+                
+                if current_hash and manifest.fingerprint != current_hash:
+                    mismatch_count += 1
+                    print(f"    MISMATCH: {topic_dir.name} (stored={manifest.fingerprint}, actual={current_hash})")
+    
+    if mismatch_count == 0:
+        print("    All fingerprints valid ✓")
+    else:
+        print(f"    {mismatch_count} mismatch(es) detected!")
+    
+    # 5. NOTIFY Count (Last 7 Days)
+    store = ContentStore()
+    seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    notify_count = 0
+    planner_task_count = 0
+    
+    # Query content store for recent entries (approximate: last 1000)
+    all_entries = store.list_entries(limit=1000)
+    for entry in all_entries:
+        try:
+            ingested = datetime.fromisoformat(entry.ingested_at.replace("Z", "+00:00"))
+            if ingested >= seven_days_ago:
+                # Check if NOTIFY was triggered (check deep_analysis or routing)
+                if hasattr(entry, 'deep_analysis') and entry.deep_analysis:
+                    actions = entry.deep_analysis.system_actions or []
+                    if 'NOTIFY' in [a.value if hasattr(a, 'value') else a for a in actions]:
+                        notify_count += 1
+                    route = entry.deep_analysis.route_destination
+                    if route and hasattr(route, 'value') and route.value == 'PLANNER_TASK':
+                        planner_task_count += 1
+                    elif route == 'PLANNER_TASK':
+                        planner_task_count += 1
+        except Exception:
+            continue
+    
+    print("\n[5] ACTIVITY (LAST 7 DAYS)")
+    print(f"    NOTIFY triggers:    {notify_count}")
+    print(f"    Planner tasks:      {planner_task_count}")
+    
+    print("\n" + "=" * 60)
+    print("Report complete.")
+    
+    return 0
+
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog='dtl',
@@ -824,6 +1343,9 @@ def main():
     
     # Status command
     status_parser = subparsers.add_parser('status', help='Show system status')
+    
+    # Health command
+    health_parser = subparsers.add_parser('health', help='Check system health (databases, LLM, API)')
     
     # Validate-bundle command
     validate_parser = subparsers.add_parser('validate-bundle', help='Validate a CommitBundle')
@@ -884,6 +1406,43 @@ def main():
     # Content-status command
     content_status_parser = subparsers.add_parser('content-status', help='Show content store statistics')
     
+    # ==========================================================================
+    # Datamart Commands
+    # ==========================================================================
+    
+    # Datamart sync command
+    sync_parser = subparsers.add_parser('datamart-sync', help='Sync datamart bundles to Drive folder')
+    sync_parser.add_argument('topic_id', nargs='?', help='Topic ID to sync (all if not specified)')
+    sync_parser.add_argument('--dry-run', dest='dry_run', action='store_true', help='Preview sync without copying files')
+    sync_parser.add_argument('--dest', help='Destination folder path (defaults to ~/Google Drive/NotebookLM)')
+    
+    # Datamart list command
+    bundles_parser = subparsers.add_parser('datamarts', help='List all datamart bundles')
+    bundles_parser.add_argument('--include-archived', dest='include_archived', action='store_true', help='Include archived bundles')
+    
+    # Datamart show command
+    bundle_parser = subparsers.add_parser('datamart', help='Show datamart bundle details')
+    bundle_parser.add_argument('topic_id', help='Topic ID to show')
+    
+    # Datamart create command
+    create_dm_parser = subparsers.add_parser('datamart-create', help='Create a new datamart bundle')
+    create_dm_parser.add_argument('topic_id', help='Topic ID (lowercase, hyphens only)')
+    create_dm_parser.add_argument('--name', required=True, help='Display name for the topic')
+    create_dm_parser.add_argument('--tags', help='Comma-separated tags')
+
+    # Datamart approve command
+    approve_dm_parser = subparsers.add_parser('datamart-approve', help='Approve a pending datamart topic')
+    approve_dm_parser.add_argument('topic_id', help='Topic ID to approve')
+
+    # Datamart rebuild command
+    rebuild_dm_parser = subparsers.add_parser('datamart-rebuild', help='Rebuild bundle from source of truth')
+    rebuild_dm_parser.add_argument('topic_id', help='Topic ID to rebuild')
+
+    # Datamart health command
+    health_parser = subparsers.add_parser('datamart-health', help='Print weekly datamart health report')
+
+
+    
     args = parser.parse_args()
     
     if args.command == 'run':
@@ -910,6 +1469,22 @@ def main():
         return cmd_insights(args)
     elif args.command == 'content-status':
         return cmd_content_status(args)
+    elif args.command == 'datamart-sync':
+        return cmd_datamart_sync(args)
+    elif args.command == 'datamarts':
+        return cmd_datamarts(args)
+    elif args.command == 'datamart':
+        return cmd_datamart_show(args)
+    elif args.command == 'datamart-create':
+        return cmd_datamart_create(args)
+    elif args.command == 'datamart-approve':
+        return cmd_datamart_approve(args)
+    elif args.command == 'datamart-rebuild':
+        return cmd_datamart_rebuild(args)
+    elif args.command == 'datamart-health':
+        return cmd_datamart_health(args)
+    elif args.command == 'health':
+        return cmd_health(args)
     else:
         parser.print_help()
         return 0

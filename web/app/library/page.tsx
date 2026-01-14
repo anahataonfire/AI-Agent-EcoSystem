@@ -67,7 +67,7 @@ export default function LibraryPage() {
 
     const fetchEvidence = async () => {
         try {
-            const res = await fetch("http://localhost:8000/evidence/browse?limit=50", {
+            const res = await fetch("http://localhost:8000/evidence/browse?limit=500", {
                 headers: { "X-API-Key": "dev-token-change-me" },
             });
             if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -220,6 +220,11 @@ export default function LibraryPage() {
                                 <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded-full">
                                     {filtered.uncategorized.length} items
                                 </span>
+                                <div className="flex-1" />
+                                <BulkAutoCategorizeButton
+                                    count={filtered.uncategorized.length}
+                                    onComplete={fetchContent}
+                                />
                             </div>
                             <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4">
                                 <div className="space-y-2">
@@ -659,6 +664,7 @@ function OrganizedCard({
                     >
                         {autoSuggesting ? "⏳" : "✨ Auto"}
                     </Button>
+                    <DeepResearchButton contentId={item.id} title={item.title} />
                     <Dialog open={showEdit} onOpenChange={setShowEdit}>
                         <DialogTrigger asChild>
                             <Button variant="ghost" size="sm" className="h-6 text-[10px] text-zinc-500">
@@ -760,5 +766,230 @@ function EvidenceCard({ item }: { item: EvidenceItem }) {
                 )}
             </CardContent>
         </Card>
+    );
+}
+
+// Bulk auto-categorize button for triage section
+function BulkAutoCategorizeButton({
+    count,
+    onComplete,
+}: {
+    count: number;
+    onComplete: () => void;
+}) {
+    const [processing, setProcessing] = useState(false);
+    const [result, setResult] = useState<{ applied: number; processed: number } | null>(null);
+
+    const handleBulkCategorize = async () => {
+        setProcessing(true);
+        setResult(null);
+        try {
+            const res = await fetch("http://localhost:8000/content/bulk-auto-categorize?apply=true", {
+                method: "POST",
+                headers: { "X-API-Key": "dev-token-change-me" },
+            });
+            const data = await res.json();
+            if (data.success) {
+                setResult({ applied: data.applied, processed: data.processed });
+                onComplete();
+            }
+        } catch (e) {
+            console.error("Bulk categorize error:", e);
+        } finally {
+            setProcessing(false);
+        }
+    };
+
+    return (
+        <div className="flex items-center gap-2">
+            {result && (
+                <span className="text-xs text-green-400">
+                    ✓ {result.applied} categorized
+                </span>
+            )}
+            <Button
+                variant="outline"
+                size="sm"
+                onClick={handleBulkCategorize}
+                disabled={processing}
+                className="h-7 px-3 text-xs bg-gradient-to-r from-cyan-500/10 to-purple-500/10 border-cyan-500/30 text-cyan-300 hover:text-cyan-200 hover:border-cyan-400/50"
+            >
+                {processing ? (
+                    <>⏳ Processing {count} items...</>
+                ) : (
+                    <>✨ Auto-Categorize All ({count})</>
+                )}
+            </Button>
+        </div>
+    );
+}
+
+// Deep research button for content items
+function DeepResearchButton({ contentId, title }: { contentId: string; title: string }) {
+    const [open, setOpen] = useState(false);
+    const [status, setStatus] = useState<string>("idle");
+    const [job, setJob] = useState<{
+        research_id: string;
+        status: string;
+        extracted_claims: string[];
+        research_findings: { source: string; title?: string; url?: string }[];
+        report_markdown?: string;
+        datamart?: string;
+        error?: string;
+    } | null>(null);
+
+    const startResearch = async () => {
+        setStatus("starting");
+        try {
+            const res = await fetch(`http://localhost:8000/content/${contentId}/deep-research`, {
+                method: "POST",
+                headers: { "X-API-Key": "dev-token-change-me" },
+            });
+            const data = await res.json();
+            setJob(data);
+            setStatus("polling");
+            // Poll for status
+            pollStatus(contentId);
+        } catch (e) {
+            console.error("Deep research error:", e);
+            setStatus("error");
+        }
+    };
+
+    const pollStatus = async (id: string) => {
+        const interval = setInterval(async () => {
+            try {
+                const res = await fetch(`http://localhost:8000/content/${id}/deep-research/status`, {
+                    headers: { "X-API-Key": "dev-token-change-me" },
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    setJob(data);
+                    if (["completed", "failed"].includes(data.status)) {
+                        clearInterval(interval);
+                        setStatus(data.status);
+                    }
+                }
+            } catch (e) {
+                console.error("Poll error:", e);
+            }
+        }, 2000);
+
+        // Cleanup after 2 minutes max
+        setTimeout(() => clearInterval(interval), 120000);
+    };
+
+    const getStatusLabel = () => {
+        switch (job?.status) {
+            case "extracting": return "🔍 Extracting claims...";
+            case "researching": return "📚 Researching claims...";
+            case "synthesizing": return "🧠 Synthesizing report...";
+            case "completed": return "✅ Complete";
+            case "failed": return "❌ Failed";
+            default: return "🔬 Deep Research";
+        }
+    };
+
+    return (
+        <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger asChild>
+                <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 text-[10px] text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
+                    title="Deep research this content"
+                >
+                    🔬 Research
+                </Button>
+            </DialogTrigger>
+            <DialogContent className="bg-zinc-900 border-zinc-800 max-w-2xl max-h-[80vh] overflow-y-auto">
+                <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2">
+                        <span>🔬</span>
+                        Deep Research: {title.slice(0, 40)}{title.length > 40 ? "..." : ""}
+                    </DialogTitle>
+                    <DialogDescription>
+                        Analyze claims and research across multiple sources
+                    </DialogDescription>
+                </DialogHeader>
+
+                {status === "idle" && (
+                    <div className="py-8 text-center">
+                        <p className="text-zinc-400 mb-4">
+                            This will extract key claims from the content, research them across Google News and Reddit, and synthesize a comprehensive analysis.
+                        </p>
+                        <Button onClick={startResearch} className="bg-gradient-to-r from-emerald-500 to-teal-500">
+                            🚀 Start Deep Research
+                        </Button>
+                    </div>
+                )}
+
+                {["starting", "polling"].includes(status) && job && (
+                    <div className="py-4 space-y-4">
+                        <div className="flex items-center gap-2 text-lg font-medium">
+                            <span className="animate-pulse">⏳</span>
+                            {getStatusLabel()}
+                        </div>
+
+                        {job.extracted_claims.length > 0 && (
+                            <div>
+                                <p className="text-sm text-zinc-500 mb-2">Extracted Claims:</p>
+                                <ul className="text-sm space-y-1">
+                                    {job.extracted_claims.map((claim, i) => (
+                                        <li key={i} className="text-zinc-300">• {claim}</li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
+
+                        {job.research_findings.length > 0 && (
+                            <div>
+                                <p className="text-sm text-zinc-500 mb-2">Findings ({job.research_findings.length}):</p>
+                                <div className="max-h-32 overflow-y-auto text-xs text-zinc-400 space-y-1">
+                                    {job.research_findings.slice(0, 5).map((f, i) => (
+                                        <div key={i}>• [{f.source}] {f.title || "Searched"}</div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {status === "completed" && job && (
+                    <div className="py-4 space-y-4">
+                        <div className="flex items-center gap-2 text-green-400">
+                            <span>✅</span>
+                            Research Complete
+                            {job.datamart && (
+                                <span className="text-xs bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full">
+                                    → {job.datamart}
+                                </span>
+                            )}
+                        </div>
+
+                        {job.report_markdown && (
+                            <div className="prose prose-invert prose-sm max-w-none bg-zinc-800/50 rounded-xl p-4 max-h-96 overflow-y-auto">
+                                <pre className="whitespace-pre-wrap text-sm text-zinc-300 font-sans">
+                                    {job.report_markdown}
+                                </pre>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {status === "failed" && job && (
+                    <div className="py-4">
+                        <div className="text-red-400 mb-2">❌ Research Failed</div>
+                        <p className="text-sm text-zinc-500">{job.error}</p>
+                    </div>
+                )}
+
+                <DialogFooter>
+                    <DialogClose asChild>
+                        <Button variant="outline" className="border-zinc-700">Close</Button>
+                    </DialogClose>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
     );
 }
