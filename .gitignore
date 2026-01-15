@@ -22,3 +22,20 @@ env/
 # Project specific
 data/*
 !data/test_suite.yaml
+
+# Debug and temp files
+debug_*.py
+test_date_filter.py
+output_*.txt
+**/dir_list.txt
+
+# Backup directories
+web-clean/
+
+# Node.js
+web/node_modules/
+web/.next/
+web/package-lock.json
+
+# Generated Next.js files
+web/next-env.d.ts
