@@ -97,10 +97,15 @@ class PolymarketCLOBClient:
         self.max_position_size = max_position_size
         self.max_total_exposure = max_total_exposure
         
-        # Load private key from env if not provided
+        # Load credentials from env
+        self.api_key = os.getenv("POLYMARKET_API_KEY")
+        self.api_secret = os.getenv("POLYMARKET_API_SECRET")
+        self.api_passphrase = os.getenv("POLYMARKET_API_PASSPHRASE")
+        self.address = os.getenv("POLYMARKET_ADDRESS")
+        
+        # Fallback to private key
         if private_key is None:
             private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
-        
         self.private_key = private_key
         
         # Paper trading state
@@ -115,16 +120,44 @@ class PolymarketCLOBClient:
             "trade_log.json"
         )
         
-        if not paper_mode and not private_key:
-            raise ValueError(
-                "POLYMARKET_PRIVATE_KEY required for live trading. "
-                "Set paper_mode=True for testing."
-            )
+        # Validate credentials for live mode
+        if not paper_mode:
+            if not (self.api_key and self.api_secret and self.api_passphrase):
+                raise ValueError(
+                    "API credentials required for live trading. "
+                    "Run: python scripts/setup_polymarket_api.py"
+                )
         
         logger.info(
             f"Initialized CLOB client - "
             f"{'PAPER MODE' if paper_mode else 'LIVE MODE'}"
         )
+    
+    def _generate_signature(self, timestamp: str, method: str, path: str, body: str = "") -> str:
+        """Generate HMAC-SHA256 signature for API request."""
+        message = timestamp + method + path + body
+        signature = hmac.new(
+            self.api_secret.encode(),
+            message.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        return signature
+    
+    def _auth_headers(self, method: str, path: str, body: str = "") -> Dict:
+        """Generate authenticated headers for CLOB API."""
+        timestamp = str(int(time.time()))
+        signature = self._generate_signature(timestamp, method, path, body)
+        
+        return {
+            "POLY_ADDRESS": self.address,
+            "POLY_SIGNATURE": signature,
+            "POLY_TIMESTAMP": timestamp,
+            "POLY_NONCE": str(int(time.time() * 1000)),
+            "POLY_API_KEY": self.api_key,
+            "POLY_PASSPHRASE": self.api_passphrase,
+            "Content-Type": "application/json",
+            "User-Agent": "WeatherTrader/1.0"
+        }
     
     def _make_request(
         self, 
@@ -261,21 +294,59 @@ class PolymarketCLOBClient:
             )
             
         else:
-            # Live trading
-            logger.info(f"[LIVE] Would place {side} order: ${size:.2f} @ {price:.2f}")
+            # Live trading - submit to CLOB API
+            logger.info(f"[LIVE] Placing {side} order: ${size:.2f} @ {price:.2f}")
             
-            # TODO: Implement actual CLOB order signing and submission
-            # This requires:
-            # 1. Generate API credentials from private key
-            # 2. Build signed order using EIP-712
-            # 3. Submit to CLOB API
-            # 4. Monitor for fill
+            # Build order payload
+            order_payload = {
+                "tokenID": token_id,
+                "price": str(price),
+                "size": str(size),
+                "side": side,
+                "type": order_type,
+            }
             
-            order.status = "SUBMITTED"
-            logger.warning(
-                "Live order placement not yet implemented. "
-                "Order logged but not executed."
-            )
+            body = json.dumps(order_payload)
+            path = "/order"
+            headers = self._auth_headers("POST", path, body)
+            
+            try:
+                req = Request(
+                    f"{CLOB_BASE_URL}{path}",
+                    data=body.encode(),
+                    headers=headers,
+                    method="POST"
+                )
+                
+                with urlopen(req, timeout=30) as response:
+                    result = json.loads(response.read().decode())
+                    
+                    order.order_id = result.get("orderID", order.order_id)
+                    order.status = "SUBMITTED"
+                    
+                    logger.info(f"[LIVE] Order submitted: {order.order_id}")
+                    
+                    # Log the trade
+                    trade = Trade(
+                        trade_id=f"live_{order.order_id}",
+                        order_id=order.order_id,
+                        token_id=token_id,
+                        market_slug=market_slug,
+                        side=side,
+                        price=price,
+                        size=size,
+                        executed_at=datetime.now(timezone.utc),
+                        paper_mode=False
+                    )
+                    self._log_trade(trade)
+                    
+            except HTTPError as e:
+                error_body = e.read().decode() if e.fp else ""
+                logger.error(f"[LIVE] Order failed: {e.code} - {error_body}")
+                order.status = "FAILED"
+            except Exception as e:
+                logger.error(f"[LIVE] Order error: {e}")
+                order.status = "FAILED"
         
         self._paper_orders.append(order)
         return order
