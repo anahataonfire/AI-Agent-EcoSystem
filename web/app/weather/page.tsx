@@ -164,7 +164,12 @@ function BotStatus() {
                                     </span>
                                     <span className="text-zinc-300">{trade.side}</span>
                                     <span className="text-zinc-500">${trade.size} @ {trade.price}</span>
-                                    <span className="text-zinc-600 text-xs ml-auto">{trade.market_slug.slice(0, 25)}...</span>
+                                    <span
+                                        className="text-zinc-600 text-xs ml-auto cursor-help truncate max-w-[200px]"
+                                        title={trade.market_slug}
+                                    >
+                                        {trade.market_slug}
+                                    </span>
                                 </div>
                             ))}
                         </div>

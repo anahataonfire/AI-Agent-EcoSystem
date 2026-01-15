@@ -187,8 +187,19 @@ export default function LibraryPage() {
             </div>
 
             {error && (
-                <div className="bg-red-950/30 border border-red-800/50 rounded-xl p-3 text-sm">
-                    <p className="text-red-400">⚠️ {error}</p>
+                <div className="bg-red-950/30 border border-red-800/50 rounded-xl p-4 flex items-center justify-between">
+                    <div>
+                        <p className="text-red-400 font-medium">⚠️ Connection Error</p>
+                        <p className="text-red-400/70 text-sm">{error}</p>
+                    </div>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => { fetchContent(); fetchEvidence(); }}
+                        className="border-red-800 text-red-400 hover:bg-red-900/30"
+                    >
+                        ↻ Retry
+                    </Button>
                 </div>
             )}
 
