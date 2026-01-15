@@ -28,106 +28,143 @@ export async function GET(request: NextRequest) {
             const cmd = `"${venvPython}" -c "
 import json
 import sys
-sys.path.insert(0, '${projectRoot}')
-from src.weather_trading.forecaster import WeatherForecaster
-from src.weather_trading.browser_scraper import get_scraped_markets
-from src.weather_trading.edge_calculator import EdgeCalculator
-from src.weather_trading.config import WEATHER_CITIES
-from datetime import date, timedelta
+import traceback
 
-cities = '${cities}'.split(',')
-forecaster = WeatherForecaster()
-calculator = EdgeCalculator()
-
-# Get forecasts
-forecasts = []
-for city in cities:
-    try:
-        # Use str(date.today()) to get YYYY-MM-DD format
-        fc = forecaster.get_daily_high_forecast(city, str(date.today()))
-        if fc:
-            forecasts.append({
-                'city': city,
-                'temp': round(fc.high_f),  # Use high_f
-                'unit': 'F',
-                'confidence': fc.confidence
-            })
-    except Exception as e:
-        print(f'Error fetching forecast for {city}: {e}', file=sys.stderr)
-        pass
-
-# Get markets
+# Wrap entire script in try-except to always output valid JSON
 try:
-    scraped = get_scraped_markets()
-except:
-    scraped = []
+    sys.path.insert(0, '${projectRoot}')
+    from src.weather_trading.forecaster import WeatherForecaster
+    from src.weather_trading.browser_scraper import get_scraped_markets
+    from src.weather_trading.edge_calculator import EdgeCalculator
+    from src.weather_trading.config import WEATHER_CITIES
+    from datetime import date, timedelta
 
-opportunities = []
-today = str(date.today())
+    cities = '${cities}'.split(',')
+    forecaster = WeatherForecaster()
+    calculator = EdgeCalculator()
 
-for m in scraped:
-    if m.city_key not in cities:
-        continue
-    
-    # Skip resolved/past markets
-    if m.target_date < today:
-        continue
-    
-    # Skip TODAY's markets - by afternoon the temperature is known, market is resolved
-    if m.target_date == today:
-        continue
-    
-    # Skip effectively resolved markets (price near 0% or 100%)
-    if m.yes_price < 0.02 or m.yes_price > 0.98:
-        continue
-    
-    # Find matching forecast
-    fc = next((f for f in forecasts if f['city'] == m.city_key), None)
-    if not fc:
-        continue
-    
-    # Normalize units (Forecast is F by default, Market might be C)
-    forecast_temp = fc['temp']
-    market_unit = m.bucket_unit
-    
-    if market_unit == 'C' and fc['unit'] == 'F':
-        forecast_temp = (forecast_temp - 32) * 5 / 9
-    
-    # Simple edge calculation using normalized temp
-    calculated_prob = 0.5  # Default
-    if m.bucket_low <= forecast_temp <= m.bucket_high:
-        calculated_prob = 0.7  # High if in bucket
-    elif abs(forecast_temp - (m.bucket_low + m.bucket_high) / 2) < 3:
-        calculated_prob = 0.3  # Medium if close
-    else:
-        calculated_prob = 0.1  # Low if far
-    
-    edge = calculated_prob - m.yes_price
-    
-    opportunities.append({
-        'city': m.city_key,
-        'city_name': WEATHER_CITIES.get(m.city_key, {}).get('name', m.city_key),
-        'target_date': m.target_date,
-        'bucket_low': m.bucket_low if m.bucket_low != float('-inf') else -999,
-        'bucket_high': m.bucket_high if m.bucket_high != float('inf') else 999,
-        'bucket_unit': m.bucket_unit,
-        'forecast_temp': round(forecast_temp, 1), # Return normalized temp
-        'forecast_confidence': fc['confidence'],
-        'market_price': m.yes_price,
-        'calculated_probability': calculated_prob,
-        'edge': edge,
-        'liquidity': m.liquidity,
-        'hours_remaining': 24,
-        'market_url': f'https://polymarket.com/market/{m.slug}'
-    })
+    # Get forecasts
+    forecasts = []
+    for city in cities:
+        try:
+            # Use str(date.today()) to get YYYY-MM-DD format
+            fc = forecaster.get_daily_high_forecast(city, str(date.today()))
+            if fc:
+                forecasts.append({
+                    'city': city,
+                    'temp': round(fc.high_f),  # Use high_f
+                    'unit': 'F',
+                    'confidence': fc.confidence,
+                    'ecmwf': fc.ecmwf_high,
+                    'gfs': fc.gfs_high,
+                    'nws': fc.nws_high
+                })
+            else:
+                print(f'No forecasts found for {city} on {date.today()}', file=sys.stderr)
+        except Exception as e:
+            print(f'Error fetching forecast for {city}: {e}', file=sys.stderr)
 
-result = {
-    'scan_time': str(date.today()),
-    'cities': cities,
-    'forecasts': forecasts,
-    'opportunities': sorted(opportunities, key=lambda x: -x['edge'])
-}
-print(json.dumps(result))
+    # Get markets
+    try:
+        scraped = get_scraped_markets()
+    except Exception as e:
+        print(f'Error scraping markets: {e}', file=sys.stderr)
+        scraped = []
+
+    opportunities = []
+    today = str(date.today())
+
+    for m in scraped:
+        if m.city_key not in cities:
+            continue
+        
+        # Skip resolved/past markets
+        if m.target_date < today:
+            continue
+        
+        # Skip TODAY's markets - by afternoon the temperature is known, market is resolved
+        if m.target_date == today:
+            continue
+        
+        # Skip effectively resolved markets (price near 0% or 100%)
+        if m.yes_price < 0.02 or m.yes_price > 0.98:
+            continue
+        
+        # Find matching forecast
+        fc = next((f for f in forecasts if f['city'] == m.city_key), None)
+        if not fc:
+            continue
+        
+        # Normalize units (Forecast is F by default, Market might be C)
+        forecast_temp = fc['temp']
+        market_unit = m.bucket_unit
+        
+        if market_unit == 'C' and fc['unit'] == 'F':
+            forecast_temp = (forecast_temp - 32) * 5 / 9
+        
+        # Get std deviation from model spread or use default
+        std_dev = 3.0  # Default uncertainty
+        if fc.get('ecmwf') and fc.get('gfs'):
+            # Use model spread as uncertainty proxy
+            spread = abs(fc.get('ecmwf', 0) - fc.get('gfs', 0))
+            std_dev = max(2.0, min(8.0, spread / 2 + 1.5))
+        elif fc.get('confidence', 0.7) < 0.7:
+            std_dev = 4.0  # Higher uncertainty if low confidence
+        
+        # Calculate probability using normal distribution CDF
+        import math
+        def norm_cdf(x, mean, std):
+            if std <= 0:
+                return 1.0 if x >= mean else 0.0
+            z = (x - mean) / (std * math.sqrt(2))
+            return 0.5 * (1 + math.erf(z))
+        
+        # Handle -inf/inf bounds for 'or below'/'or above' buckets
+        bucket_low = m.bucket_low if m.bucket_low != float('-inf') else forecast_temp - 50
+        bucket_high = m.bucket_high if m.bucket_high != float('inf') else forecast_temp + 50
+        
+        # P(bucket_low <= temp <= bucket_high)
+        prob_high = norm_cdf(bucket_high + 0.5, forecast_temp, std_dev)
+        prob_low = norm_cdf(bucket_low - 0.5, forecast_temp, std_dev)
+        calculated_prob = max(0.0, min(1.0, prob_high - prob_low))
+        
+        edge = calculated_prob - m.yes_price
+        
+        opportunities.append({
+            'city': m.city_key,
+            'city_name': WEATHER_CITIES.get(m.city_key, {}).get('name', m.city_key),
+            'target_date': m.target_date,
+            'bucket_low': m.bucket_low if m.bucket_low != float('-inf') else -999,
+            'bucket_high': m.bucket_high if m.bucket_high != float('inf') else 999,
+            'bucket_unit': m.bucket_unit,
+            'forecast_temp': round(forecast_temp, 1),
+            'forecast_confidence': fc['confidence'],
+            'market_price': m.yes_price,
+            'calculated_probability': calculated_prob,
+            'edge': edge,
+            'liquidity': m.liquidity,
+            'hours_remaining': 24,
+            'market_url': f'https://polymarket.com/market/{m.slug}'
+        })
+
+    result = {
+        'scan_time': str(date.today()),
+        'cities': cities,
+        'forecasts': forecasts,
+        'opportunities': sorted(opportunities, key=lambda x: -x['edge'])
+    }
+    print(json.dumps(result))
+
+except Exception as e:
+    # Output valid JSON even on error
+    error_result = {
+        'scan_time': str(date.today()) if 'date' in dir() else 'unknown',
+        'cities': cities if 'cities' in dir() else [],
+        'forecasts': forecasts if 'forecasts' in dir() else [],
+        'opportunities': [],
+        'error': str(e)
+    }
+    print(json.dumps(error_result))
 "`;
 
             const { stdout, stderr } = await execAsync(cmd, {
