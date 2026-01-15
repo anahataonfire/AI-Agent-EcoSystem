@@ -15,6 +15,7 @@ const navItems = [
     { href: "/mission", label: "Mission Control", icon: "🚀" },
     { href: "/polymarket", label: "Polymarket", icon: "🎯" },
     { href: "/weather", label: "Weather Trading", icon: "🌡️" },
+    { href: "/follow-trader", label: "Follow Trader", icon: "👤" },
     { href: "/hangar", label: "The Hangar", icon: "🛫" },
     { href: "/architecture", label: "Architecture", icon: "🏗️" },
     { href: "/health", label: "Health", icon: "💊" },
