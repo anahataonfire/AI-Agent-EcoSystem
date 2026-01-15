@@ -74,10 +74,28 @@ class WeatherBacktester:
         min_edge: float = 0.10,  # 10% minimum edge
         position_size: float = 10.0,  # $10 per trade
         std_dev_default: float = 3.0,
+        # V2 Improvements
+        max_uncertainty: float = 5.0,  # Skip trades when std > 5°F
+        require_consensus: bool = False,  # Require model consensus
+        use_city_rules: bool = False,  # Use city-specific edge thresholds
     ):
         self.min_edge = min_edge
         self.position_size = position_size
         self.std_dev_default = std_dev_default
+        # V2 Settings
+        self.max_uncertainty = max_uncertainty
+        self.require_consensus = require_consensus
+        self.use_city_rules = use_city_rules
+        
+        # City-specific minimum edge thresholds
+        # Based on forecast accuracy analysis
+        self.city_min_edge = {
+            "nyc": 0.15,      # NYC needs higher edge (20% win rate)
+            "london": 0.12,   # London better forecasts (24% win rate)
+            "atlanta": 0.15,
+            "seattle": 0.12,
+            "buenos_aires": 0.18,  # Harder to predict
+        }
     
     def _fetch_json(self, url: str) -> dict:
         """Fetch JSON from URL."""
@@ -234,9 +252,17 @@ class WeatherBacktester:
         """
         Simulate a single trade decision.
         
+        V2 Improvements:
+        - Skip high uncertainty trades (std > max_uncertainty)
+        - Use city-specific edge thresholds
+        
         Returns:
             BacktestTrade if we would have traded, None otherwise
         """
+        # V2: Skip high uncertainty trades
+        if forecast_std > self.max_uncertainty:
+            return None
+        
         # Calculate our probability
         our_prob = calculate_bucket_probability(
             forecast_temp, forecast_std, bucket_low, bucket_high
@@ -245,8 +271,14 @@ class WeatherBacktester:
         # Calculate edge
         edge = our_prob - simulated_price
         
+        # V2: Use city-specific edge thresholds
+        if self.use_city_rules:
+            min_edge = self.city_min_edge.get(city, self.min_edge)
+        else:
+            min_edge = self.min_edge
+        
         # Only trade if edge exceeds threshold
-        if edge < self.min_edge:
+        if edge < min_edge:
             return None
         
         # Determine outcome
