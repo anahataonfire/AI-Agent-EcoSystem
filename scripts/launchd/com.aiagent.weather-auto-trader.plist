@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aiagent.weather-auto-trader</string>
+    
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0/.venv/bin/python</string>
+        <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0/scripts/weather_auto_trader.py</string>
+        <string>--live</string>
+    </array>
+    
+    <key>WorkingDirectory</key>
+    <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0</string>
+    
+    <!-- Run every 15 minutes -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+    
+    <!-- Also run at load -->
+    <key>RunAtLoad</key>
+    <true/>
+    
+    <!-- Keep alive - restart if it crashes -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    
+    <!-- Logging -->
+    <key>StandardOutPath</key>
+    <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0/logs/weather_trader.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0/logs/weather_trader_error.log</string>
+    
+    <!-- Environment -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin</string>
+        <key>PYTHONPATH</key>
+        <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0</string>
+    </dict>
+</dict>
+</plist>
