@@ -20,10 +20,12 @@ export async function GET(request: NextRequest) {
     try {
         if (useLive) {
             // Run the actual Python scanner
-            const projectRoot = path.resolve(process.cwd(), "..");
+            // HARDCODED absolute path to verify backend location regardless of where frontend runs
+            const projectRoot = "/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0";
             const venvPython = path.join(projectRoot, ".venv", "bin", "python");
 
-            const cmd = `${venvPython} -c "
+            // Quote the executable path to handle spaces in "001 AI Agents"
+            const cmd = `"${venvPython}" -c "
 import json
 import sys
 sys.path.insert(0, '${projectRoot}')
@@ -41,15 +43,17 @@ calculator = EdgeCalculator()
 forecasts = []
 for city in cities:
     try:
-        fc = forecaster.get_forecast(city, date.today())
+        # Use str(date.today()) to get YYYY-MM-DD format
+        fc = forecaster.get_daily_high_forecast(city, str(date.today()))
         if fc:
             forecasts.append({
                 'city': city,
-                'temp': round(fc.high_temp),
+                'temp': round(fc.high_f),  # Use high_f
                 'unit': 'F',
                 'confidence': fc.confidence
             })
     except Exception as e:
+        print(f'Error fetching forecast for {city}: {e}', file=sys.stderr)
         pass
 
 # Get markets
@@ -59,8 +63,22 @@ except:
     scraped = []
 
 opportunities = []
+today = str(date.today())
+
 for m in scraped:
     if m.city_key not in cities:
+        continue
+    
+    # Skip resolved/past markets
+    if m.target_date < today:
+        continue
+    
+    # Skip TODAY's markets - by afternoon the temperature is known, market is resolved
+    if m.target_date == today:
+        continue
+    
+    # Skip effectively resolved markets (price near 0% or 100%)
+    if m.yes_price < 0.02 or m.yes_price > 0.98:
         continue
     
     # Find matching forecast
@@ -68,11 +86,18 @@ for m in scraped:
     if not fc:
         continue
     
-    # Simple edge calculation
+    # Normalize units (Forecast is F by default, Market might be C)
+    forecast_temp = fc['temp']
+    market_unit = m.bucket_unit
+    
+    if market_unit == 'C' and fc['unit'] == 'F':
+        forecast_temp = (forecast_temp - 32) * 5 / 9
+    
+    # Simple edge calculation using normalized temp
     calculated_prob = 0.5  # Default
-    if m.bucket_low <= fc['temp'] <= m.bucket_high:
+    if m.bucket_low <= forecast_temp <= m.bucket_high:
         calculated_prob = 0.7  # High if in bucket
-    elif abs(fc['temp'] - (m.bucket_low + m.bucket_high) / 2) < 3:
+    elif abs(forecast_temp - (m.bucket_low + m.bucket_high) / 2) < 3:
         calculated_prob = 0.3  # Medium if close
     else:
         calculated_prob = 0.1  # Low if far
@@ -86,7 +111,7 @@ for m in scraped:
         'bucket_low': m.bucket_low if m.bucket_low != float('-inf') else -999,
         'bucket_high': m.bucket_high if m.bucket_high != float('inf') else 999,
         'bucket_unit': m.bucket_unit,
-        'forecast_temp': fc['temp'],
+        'forecast_temp': round(forecast_temp, 1), # Return normalized temp
         'forecast_confidence': fc['confidence'],
         'market_price': m.yes_price,
         'calculated_probability': calculated_prob,

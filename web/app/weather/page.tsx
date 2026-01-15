@@ -261,14 +261,18 @@ function OpportunityCard({ opportunity, threshold }: { opportunity: WeatherOppor
     const city = CITIES.find((c) => c.key === opportunity.city);
     const flag = city?.flag || "🌍";
 
+    // Handle -999/999 placeholders for "or below"/"or above" markets
     const bucketLabel =
-        opportunity.bucket_low === -Infinity
+        opportunity.bucket_low <= -999
             ? `${opportunity.bucket_high}°${opportunity.bucket_unit} or below`
-            : opportunity.bucket_high === Infinity
+            : opportunity.bucket_high >= 999
                 ? `${opportunity.bucket_low}°${opportunity.bucket_unit} or above`
                 : `${opportunity.bucket_low}-${opportunity.bucket_high}°${opportunity.bucket_unit}`;
 
-    const dateLabel = new Date(opportunity.target_date).toLocaleDateString("en-US", {
+    // Parse date without timezone shift (YYYY-MM-DD -> local date)
+    const [year, month, day] = opportunity.target_date.split("-").map(Number);
+    const dateObj = new Date(year, month - 1, day); // month is 0-indexed
+    const dateLabel = dateObj.toLocaleDateString("en-US", {
         month: "short",
         day: "numeric",
     });
