@@ -74,7 +74,10 @@ export async function GET(request: NextRequest) {
             trades = trades.slice(-20).reverse();
         }
 
-        // Extract current scan info from logs
+        // Extract current scan info from logs - check ALL log lines for mode
+        const allLogContent = existsSync(logPath) ? readFileSync(logPath, "utf-8") : "";
+        const allLines = allLogContent.split("\n").filter(Boolean);
+
         let currentScan = {
             mode: "UNKNOWN",
             marketsFound: 0,
@@ -83,12 +86,15 @@ export async function GET(request: NextRequest) {
             opportunities: 0,
         };
 
-        for (const line of recentLogs.slice().reverse()) {
-            if (line.includes("Mode: LIVE")) {
-                currentScan.mode = "LIVE";
-            } else if (line.includes("Mode: PAPER")) {
-                currentScan.mode = "PAPER";
-            }
+        // Check for mode in entire log (it appears at startup)
+        if (allLogContent.includes("LIVE TRADING MODE") || allLogContent.includes("Mode: LIVE")) {
+            currentScan.mode = "LIVE";
+        } else if (allLogContent.includes("Mode: PAPER")) {
+            currentScan.mode = "PAPER";
+        }
+
+        // Get recent metrics from last 50 lines
+        for (const line of allLines.slice(-50).reverse()) {
 
             const marketsMatch = line.match(/Found (\d+) temperature markets/);
             if (marketsMatch) {
