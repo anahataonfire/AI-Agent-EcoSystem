@@ -266,7 +266,7 @@ class WeatherMarketScanner:
                     prices_str = market.get('outcomePrices', '[0.5]')
                     try:
                         yes_price = float(prices_str.strip('[]').split(',')[0])
-                    except:
+                    except (ValueError, IndexError, AttributeError):
                         yes_price = 0.5
                     
                     city_info = WEATHER_CITIES.get(city_key, {})

@@ -83,12 +83,19 @@ def run_scan_and_trade(paper_mode: bool = True, min_edge: float = 0.15):
     
     # Step 2: Get forecasts and calculate edge
     forecaster = WeatherForecaster()
+    forecast_cache = {}  # Cache forecasts per city/date to avoid duplicate API calls
     opportunities = []
     
     for market in tradeable:
         try:
-            # Get our forecast
-            fc = forecaster.get_daily_high_forecast(market.city_key, market.target_date)
+            # Use cached forecast if available
+            cache_key = f"{market.city_key}_{market.target_date}"
+            if cache_key in forecast_cache:
+                fc = forecast_cache[cache_key]
+            else:
+                fc = forecaster.get_daily_high_forecast(market.city_key, market.target_date)
+                forecast_cache[cache_key] = fc
+            
             if not fc:
                 continue
             

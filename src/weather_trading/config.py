@@ -46,10 +46,28 @@ WEATHER_CITIES: Dict[str, Dict] = {
         "timezone": "America/New_York",
         "resolution_source": "NWS",
     },
+    "seattle": {
+        "name": "Seattle",
+        "lat": 47.6062,
+        "lon": -122.3321,
+        "nws_office": "SEW",
+        "nws_grid": "124,67",
+        "timezone": "America/Los_Angeles",
+        "resolution_source": "NWS",
+    },
+    "toronto": {
+        "name": "Toronto",
+        "lat": 43.6532,
+        "lon": -79.3832,
+        "nws_office": None,  # No NWS for Canada
+        "nws_grid": None,
+        "timezone": "America/Toronto",
+        "resolution_source": "Environment Canada",
+    },
 }
 
 # Active cities to scan (start with subset)
-ACTIVE_CITIES = ["nyc", "london"]
+ACTIVE_CITIES = ["nyc", "london", "seattle", "toronto", "atlanta"]
 
 # Edge thresholds
 EDGE_CONFIG = {
