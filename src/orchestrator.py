@@ -7,6 +7,7 @@ Implements the 8-step enforcement order with:
 - Deterministic run_ts minting
 - CommitGate validation before writes
 - DegradedModeController for state transitions
+- Parallel agent execution for independent operations
 
 SAFETY GUARANTEES:
 - Prewrite only created after eligibility check
@@ -16,16 +17,27 @@ SAFETY GUARANTEES:
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional, Any, Callable
 
 
 class RunMode(Enum):
     MOCK = "mock"
     LIVE = "live"
+
+
+@dataclass
+class ParallelAgentResult:
+    """Result from a parallel agent execution."""
+    agent_name: str
+    success: bool
+    output: Optional[dict] = None
+    error: Optional[str] = None
+    duration_ms: int = 0
 
 
 @dataclass
@@ -38,9 +50,11 @@ class RunConfig:
     kill_switches: list[str]
     runner_capabilities: list[str] = field(default_factory=list)
     manifest_capabilities: dict = field(default_factory=dict)  # P1-1: Agent -> allowed capabilities
+    enable_parallel: bool = False  # Enable parallel agent execution
+    max_workers: int = 3  # Max parallel workers
     
     @classmethod
-    def create(cls, run_id: Optional[str] = None, mode: RunMode = RunMode.MOCK) -> 'RunConfig':
+    def create(cls, run_id: Optional[str] = None, mode: RunMode = RunMode.MOCK, enable_parallel: bool = False) -> 'RunConfig':
         """
         Factory to create RunConfig with deterministic timestamps.
         
@@ -58,7 +72,8 @@ class RunConfig:
             policy_snapshot={},
             kill_switches=[],
             runner_capabilities=[],
-            manifest_capabilities={}
+            manifest_capabilities={},
+            enable_parallel=enable_parallel
         )
 
 
@@ -71,6 +86,8 @@ class RunResult:
     steps_completed: list[str]
     errors: list[str] = field(default_factory=list)
     output: Optional[dict] = None
+    parallel_results: list[ParallelAgentResult] = field(default_factory=list)
+
 
 
 class DTLOrchestrator:
@@ -220,6 +237,90 @@ class DTLOrchestrator:
                 str(e)
             )
             return self._create_result(config, success=False)
+    
+    def run_parallel_agents(
+        self,
+        config: RunConfig,
+        agent_tasks: list[tuple[str, Callable[[], dict]]]
+    ) -> list[ParallelAgentResult]:
+        """
+        Execute independent agent operations in parallel.
+        
+        Use for operations that don't depend on each other, such as:
+        - Multiple evidence source fetches
+        - Independent analysis tasks
+        - Parallel validation operations
+        
+        Args:
+            config: Run configuration with max_workers setting
+            agent_tasks: List of (agent_name, callable) tuples
+        
+        Returns:
+            List of ParallelAgentResult with each agent's output
+        
+        Example:
+            results = orchestrator.run_parallel_agents(config, [
+                ("researcher_source_1", lambda: fetch_source("source1")),
+                ("researcher_source_2", lambda: fetch_source("source2")),
+            ])
+        """
+        import time
+        results = []
+        
+        if not config.enable_parallel or len(agent_tasks) <= 1:
+            # Fall back to sequential execution
+            for agent_name, task_fn in agent_tasks:
+                start = time.time()
+                try:
+                    output = task_fn()
+                    results.append(ParallelAgentResult(
+                        agent_name=agent_name,
+                        success=True,
+                        output=output,
+                        duration_ms=int((time.time() - start) * 1000)
+                    ))
+                except Exception as e:
+                    results.append(ParallelAgentResult(
+                        agent_name=agent_name,
+                        success=False,
+                        error=str(e),
+                        duration_ms=int((time.time() - start) * 1000)
+                    ))
+            return results
+        
+        # Parallel execution with ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=config.max_workers) as executor:
+            future_to_agent = {}
+            start_times = {}
+            
+            for agent_name, task_fn in agent_tasks:
+                start_times[agent_name] = time.time()
+                future = executor.submit(task_fn)
+                future_to_agent[future] = agent_name
+            
+            for future in as_completed(future_to_agent):
+                agent_name = future_to_agent[future]
+                duration_ms = int((time.time() - start_times[agent_name]) * 1000)
+                
+                try:
+                    output = future.result()
+                    results.append(ParallelAgentResult(
+                        agent_name=agent_name,
+                        success=True,
+                        output=output,
+                        duration_ms=duration_ms
+                    ))
+                except Exception as e:
+                    results.append(ParallelAgentResult(
+                        agent_name=agent_name,
+                        success=False,
+                        error=str(e),
+                        duration_ms=duration_ms
+                    ))
+        
+        self.steps_completed.append(f'parallel_agents:{len(results)}')
+        return results
+
     
     def _step_1_load_policy(self, config: RunConfig):
         """Step 1: Load policy snapshot."""

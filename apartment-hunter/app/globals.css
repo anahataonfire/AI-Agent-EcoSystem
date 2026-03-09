@@ -1,0 +1,156 @@
+@import "tailwindcss";
+
+:root {
+  --background: #0a0f1a;
+  --foreground: #e2e8f0;
+}
+
+body {
+  background: linear-gradient(135deg, #0a0f1a 0%, #1a1f2e 50%, #0f1729 100%);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1e293b;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+/* Score badge animations */
+@keyframes score-pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.8;
+  }
+}
+
+.score-badge {
+  animation: score-pulse 2s ease-in-out infinite;
+}
+
+/* Card hover effects */
+.listing-card {
+  transition: all 0.2s ease-in-out;
+}
+
+.listing-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 32px rgba(0, 200, 255, 0.1);
+}
+
+/* Status pill colors */
+.status-new {
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+}
+
+.status-shortlisted {
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+}
+
+.status-contacted {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+}
+
+.status-touring {
+  background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+}
+
+.status-applied {
+  background: linear-gradient(135deg, #ec4899, #db2777);
+}
+
+.status-rejected {
+  background: linear-gradient(135deg, #6b7280, #4b5563);
+}
+
+/* Neighborhood tag colors */
+.neighborhood-waikiki {
+  background: #0ea5e9;
+}
+
+.neighborhood-ala-moana {
+  background: #8b5cf6;
+}
+
+.neighborhood-diamond-head {
+  background: #f59e0b;
+}
+
+.neighborhood-downtown {
+  background: #ef4444;
+}
+
+.neighborhood-across-ala-wai {
+  background: #22c55e;
+}
+
+.neighborhood-unknown {
+  background: #6b7280;
+}
+
+/* Filter toggle styles */
+.filter-toggle {
+  transition: all 0.15s ease;
+}
+
+.filter-toggle.active {
+  background: linear-gradient(135deg, #0ea5e9, #3b82f6);
+  color: white;
+  box-shadow: 0 0 12px rgba(14, 165, 233, 0.4);
+}
+
+/* Score breakdown tooltip */
+.score-tooltip {
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.2s ease;
+}
+
+.score-hover:hover .score-tooltip {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Photo gallery */
+.photo-strip {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+}
+
+.photo-strip img {
+  scroll-snap-align: start;
+  flex-shrink: 0;
+}
+
+/* Kanban columns */
+.kanban-column {
+  min-height: 400px;
+}
+
+.kanban-card {
+  cursor: grab;
+}
+
+.kanban-card:active {
+  cursor: grabbing;
+}

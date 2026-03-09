@@ -31,8 +31,32 @@ output_*.txt
 
 # Backup directories
 web-clean/
+weather-trading-old/
+weather-trading/weather-trading/
 
-# Node.js
+# Nested repos / generated
+ralph-cli/demo/
+ralph-cli/node_modules/
+
+# Databases
+*.db
+
+# Trade logs (contain live trade data)
+trade_log.json
+**/trade_log.json
+
+# Generated exports
+codebase_export.md
+
+# Weather trading Node modules / build
+weather-trading/ui/node_modules/
+weather-trading/ui/.next/
+weather-trading/ui/package-lock.json
+
+# Node.js (all locations)
+node_modules/
+**/node_modules/
+**/.next/
 web/node_modules/
 web/.next/
 web/package-lock.json

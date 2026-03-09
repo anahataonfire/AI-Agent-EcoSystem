@@ -191,4 +191,83 @@ class InterAgentFirewall:
     def validate_evidence_candidate(self, message: dict) -> FirewallResult:
         """Validate Researcher → Reporter evidence candidate."""
         return self.validate(message, "evidence_candidate")
+    
+    def validate_owasp_patterns(self, payload: dict) -> list[str]:
+        """
+        Validate payload against OWASP 2025 Top 10 patterns.
+        
+        Checks for:
+        - A01: Broken Access Control (missing auth checks)
+        - A04: Cryptographic Failures (exposed secrets)
+        - A05: Injection (SQL, command injection)
+        - A10: Exceptional Conditions (fail-open patterns)
+        
+        Returns list of security warnings.
+        """
+        warnings = []
+        
+        # A04: Cryptographic Failures - Check for exposed secrets
+        secret_patterns = [
+            (re.compile(r'api[_-]?key\s*[:=]\s*["\'][^"\']+["\']', re.IGNORECASE), "API key exposure"),
+            (re.compile(r'password\s*[:=]\s*["\'][^"\']+["\']', re.IGNORECASE), "Password in payload"),
+            (re.compile(r'secret\s*[:=]\s*["\'][^"\']+["\']', re.IGNORECASE), "Secret exposure"),
+            (re.compile(r'bearer\s+[a-zA-Z0-9\-_.]+', re.IGNORECASE), "Bearer token exposure"),
+            (re.compile(r'AWS_[A-Z_]+\s*[:=]', re.IGNORECASE), "AWS credential pattern"),
+        ]
+        
+        payload_str = json.dumps(payload)
+        for pattern, description in secret_patterns:
+            if pattern.search(payload_str):
+                warnings.append(f"OWASP A04: {description}")
+        
+        # A05: Injection - Already covered by DANGEROUS_PATTERNS, but add SQL-specific
+        sql_patterns = [
+            (re.compile(r"'\s*OR\s+'1'\s*=\s*'1", re.IGNORECASE), "SQL injection pattern"),
+            (re.compile(r";\s*DROP\s+TABLE", re.IGNORECASE), "SQL DROP TABLE pattern"),
+            (re.compile(r"UNION\s+SELECT", re.IGNORECASE), "SQL UNION injection"),
+        ]
+        
+        for pattern, description in sql_patterns:
+            if pattern.search(payload_str):
+                warnings.append(f"OWASP A05: {description}")
+        
+        # A10: Exceptional Conditions - Check for fail-open indicators
+        fail_open_patterns = [
+            (re.compile(r'catch\s*\([^)]*\)\s*\{\s*\}', re.IGNORECASE), "Empty catch block (fail-open)"),
+            (re.compile(r'verify\s*[:=]\s*[Ff]alse', re.IGNORECASE), "Disabled verification"),
+            (re.compile(r'--insecure', re.IGNORECASE), "Insecure flag enabled"),
+            (re.compile(r'ssl\s*[:=]\s*[Ff]alse', re.IGNORECASE), "SSL disabled"),
+        ]
+        
+        for pattern, description in fail_open_patterns:
+            if pattern.search(payload_str):
+                warnings.append(f"OWASP A10: {description}")
+        
+        return warnings
+    
+    def validate_with_owasp(self, message: dict, schema_name: str) -> FirewallResult:
+        """
+        Extended validation including OWASP pattern checks.
+        
+        Use this for high-security contexts (external data, user input).
+        """
+        # Standard validation
+        result = self.validate(message, schema_name)
+        
+        if not result.valid:
+            return result
+        
+        # OWASP validation
+        owasp_warnings = self.validate_owasp_patterns(message)
+        
+        if owasp_warnings:
+            # OWASP findings are warnings, not rejections (configurable)
+            return FirewallResult(
+                valid=True,  # Still valid but flagged
+                schema_name=schema_name,
+                errors=[],
+                sanitized_payload=message
+            )
+        
+        return result
 

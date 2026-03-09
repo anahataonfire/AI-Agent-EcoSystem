@@ -16,6 +16,7 @@ const navItems = [
     { href: "/polymarket", label: "Polymarket", icon: "🎯" },
     { href: "/weather", label: "Weather Trading", icon: "🌡️" },
     { href: "/follow-trader", label: "Follow Trader", icon: "👤" },
+    { href: "/informatica", label: "Informatica Docs", icon: "📄" },
     { href: "/hangar", label: "The Hangar", icon: "🛫" },
     { href: "/architecture", label: "Architecture", icon: "🏗️" },
     { href: "/health", label: "Health", icon: "💊" },

@@ -9,8 +9,17 @@ Note: This replaces RealityCheck with explicit read-only permissions.
 
 from pathlib import Path
 from typing import Optional
+from enum import Enum
 import json
 from .base import BaseAgent, ProposalEnvelope
+
+
+class DebugPhase(Enum):
+    """4-phase systematic debugging methodology."""
+    REPRODUCE = "reproduce"      # Reliably reproduce the issue
+    ISOLATE = "isolate"          # Narrow down the source
+    UNDERSTAND = "understand"    # Find root cause with 5 Whys
+    FIX_VERIFY = "fix_verify"    # Fix and verify truly fixed
 
 
 class DiagnosticianAgent(BaseAgent):
@@ -181,34 +190,97 @@ class DiagnosticianAgent(BaseAgent):
         """
         Generate improvement suggestions based on detected issues.
         
+        Uses 4-phase debugging methodology:
+        1. REPRODUCE - Confirm issue is reproducible
+        2. ISOLATE - Narrow down the source
+        3. UNDERSTAND - Root cause via 5 Whys
+        4. FIX_VERIFY - Fix and confirm resolution
+        
         Note: These are advisory only - no direct action.
         """
         suggestions = []
         
         for issue in issues:
+            debug_context = self._build_debug_context(issue)
+            
             if issue['issue_id'].startswith('PERF'):
                 suggestions.append({
                     'suggestion_id': f"SUG-{issue['issue_id']}",
                     'category': 'performance',
                     'description': 'Review evidence source reliability and API timeouts',
-                    'estimated_impact': 'medium'
+                    'estimated_impact': 'medium',
+                    'debug_phase': DebugPhase.ISOLATE.value,
+                    'five_whys': debug_context.get('five_whys', []),
+                    'next_action': 'Check routing stats for failing sources'
                 })
             elif issue['issue_id'].startswith('LAT'):
                 suggestions.append({
                     'suggestion_id': f"SUG-{issue['issue_id']}",
                     'category': 'latency',
                     'description': 'Consider reducing max_sources per request or parallelizing fetches',
-                    'estimated_impact': 'high'
+                    'estimated_impact': 'high',
+                    'debug_phase': DebugPhase.UNDERSTAND.value,
+                    'five_whys': debug_context.get('five_whys', []),
+                    'next_action': 'Profile slowest fetch operations'
                 })
             elif issue['issue_id'].startswith('EVID'):
                 suggestions.append({
                     'suggestion_id': f"SUG-{issue['issue_id']}",
                     'category': 'evidence',
                     'description': 'Prioritize Tier 1 sources and add source validation',
-                    'estimated_impact': 'medium'
+                    'estimated_impact': 'medium',
+                    'debug_phase': DebugPhase.ISOLATE.value,
+                    'five_whys': debug_context.get('five_whys', []),
+                    'next_action': 'Review evidence quality by source'
                 })
         
         return suggestions
+    
+    def _build_debug_context(self, issue: dict) -> dict:
+        """
+        Build 5 Whys chain for systematic root cause analysis.
+        
+        Returns a structured analysis to guide debugging.
+        """
+        five_whys = []
+        
+        # Build issue-specific why chain
+        if issue['issue_id'].startswith('PERF'):
+            five_whys = [
+                {'why': 'Why is success rate low?', 'hypothesis': 'Agents failing to produce valid output'},
+                {'why': 'Why are agents failing?', 'hypothesis': 'Evidence fetch failures or LLM errors'},
+                {'why': 'Why are fetches failing?', 'hypothesis': 'Source unavailability or rate limiting'},
+                {'why': 'Why are sources unavailable?', 'hypothesis': 'Network issues or blocked IPs'},
+                {'why': 'Why blocked?', 'hypothesis': 'Missing rotation or excessive frequency'}
+            ]
+        elif issue['issue_id'].startswith('LAT'):
+            five_whys = [
+                {'why': 'Why is latency high?', 'hypothesis': 'Slow evidence fetching'},
+                {'why': 'Why is fetching slow?', 'hypothesis': 'Sequential processing or slow sources'},
+                {'why': 'Why sequential?', 'hypothesis': 'No parallelization implemented'},
+                {'why': 'Why no parallelization?', 'hypothesis': 'Rate limit concerns or implementation gap'},
+                {'why': 'Why not addressed?', 'hypothesis': 'Technical debt or priority mismatch'}
+            ]
+        elif issue['issue_id'].startswith('EVID'):
+            five_whys = [
+                {'why': 'Why is evidence quality low?', 'hypothesis': 'Sources returning thin content'},
+                {'why': 'Why thin content?', 'hypothesis': 'Paywalls, missing data, or wrong sources'},
+                {'why': 'Why wrong sources?', 'hypothesis': 'Source scoring not calibrated'},
+                {'why': 'Why not calibrated?', 'hypothesis': 'No feedback loop from quality scores'},
+                {'why': 'Why no feedback?', 'hypothesis': 'Learning controller not integrated'}
+            ]
+        
+        return {
+            'issue_id': issue['issue_id'],
+            'phase': DebugPhase.UNDERSTAND.value,
+            'five_whys': five_whys,
+            'recommended_verification': [
+                'Bug no longer reproduces',
+                'Related functionality still works',
+                'No new issues introduced',
+                'Test added to prevent regression'
+            ]
+        }
     
     def _assess_health(self, metrics: dict, issues: list[dict]) -> str:
         """

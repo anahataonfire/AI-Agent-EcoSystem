@@ -1,0 +1,12 @@
+{
+    "ralph_executor": {
+        "max_rounds": 10,
+        "max_cost_usd": 5.00,
+        "max_tokens": 100000,
+        "log_dir": "data/ralph_logs",
+        "ralph_cli_dir": "ralph-cli",
+        "kill_on_repeated_failures": true,
+        "kill_on_sandbox_violation": true,
+        "vanilla_ralph_mode": false
+    }
+}

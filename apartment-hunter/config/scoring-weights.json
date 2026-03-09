@@ -1,0 +1,20 @@
+// Default scoring weights config file
+{
+    "view_ocean": 20,
+    "view_diamond_head": 15,
+    "view_mountain": 10,
+    "view_city": 8,
+    "view_marina": 6,
+    "view_canal": 6,
+    "view_uncertain_penalty": 0.5,
+    "lanai": 20,
+    "outdoor_private": 15,
+    "outdoor_shared": 8,
+    "amenity_pool": 8,
+    "amenity_bbq": 6,
+    "amenity_pickleball": 10,
+    "amenity_gym": 4,
+    "renovation_bonus": 5,
+    "penalty_portable_ac": -10,
+    "penalty_high_app_fee": -5
+}

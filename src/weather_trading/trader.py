@@ -47,8 +47,8 @@ class WeatherTrader:
         clob_client: Optional[PolymarketCLOBClient] = None,
         min_edge: float = 0.15,  # 15% minimum edge
         min_liquidity: float = 100.0,  # $100 minimum liquidity
-        max_position_per_market: float = 10.0,  # Max $10 per market
-        max_total_exposure: float = 100.0,  # Max $100 total
+        max_position_per_market: float = 2.0,  # Max $2 per market
+        max_total_exposure: float = 20.0,  # Max $20 total
         paper_mode: bool = True,
     ):
         """

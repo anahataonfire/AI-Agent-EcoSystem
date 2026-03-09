@@ -1,0 +1,8 @@
+# Polymarket Scanner - Python Dependencies
+# Core scanner uses only Python stdlib - no install needed!
+
+# Optional: Browser-based scraping (for tracker/)
+# playwright>=1.40.0
+
+# Optional: Scheduled/cron-like scanning
+# schedule>=1.2.0

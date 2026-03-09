@@ -184,6 +184,14 @@ async def health_check():
     return {"status": "ok", "version": "3.0.0"}
 
 
+@app.get("/health/ping")
+async def health_ping():
+    """Ping endpoint for Architecture status checks."""
+    return {"status": "ok"}
+
+
+
+
 @app.get("/stats")
 async def get_stats(x_api_key: str = Header(None)):
     """Get dashboard stats - live counts from all stores."""
