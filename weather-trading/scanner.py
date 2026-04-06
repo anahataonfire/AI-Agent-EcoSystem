@@ -108,7 +108,7 @@ class WeatherMarketScanner:
         "seoul": "seoul",
     }
     
-    def __init__(self, request_delay: float = 0.5, request_timeout: float = 30.0):
+    def __init__(self, request_delay: float = 0.1, request_timeout: float = 30.0):
         self.request_delay = request_delay
         self.timeout = request_timeout
         self._last_request = 0.0
@@ -144,37 +144,39 @@ class WeatherMarketScanner:
     def _extract_bucket(self, question: str) -> Optional[Tuple[float, float, str]]:
         """
         Extract temperature bucket from market question.
-        
+
         Returns: (low, high, unit) or None
         """
+        # Detect unit before stripping (default F)
+        unit = "C" if re.search(r'°\s*C\b', question, re.IGNORECASE) else "F"
         question = question.replace("°", "")  # Normalize
-        
+
         # Try "X or below" pattern
-        below_match = re.search(r'be\s+(-?\d+)°?F?\s+or\s+below', question, re.IGNORECASE)
+        below_match = re.search(r'be\s+(-?\d+)\s*[FC]?\s+or\s+below', question, re.IGNORECASE)
         if below_match:
             temp = float(below_match.group(1))
-            return (float('-inf'), temp, "F")
-        
-        # Try "above X" or "X or above/higher" pattern
-        above_match = re.search(r'be\s+(-?\d+)°?F?\s+or\s+(?:above|higher)', question, re.IGNORECASE)
+            return (float('-inf'), temp, unit)
+
+        # Try "X or above/higher" pattern
+        above_match = re.search(r'be\s+(-?\d+)\s*[FC]?\s+or\s+(?:above|higher)', question, re.IGNORECASE)
         if above_match:
             temp = float(above_match.group(1))
-            return (temp, float('inf'), "F")
-        
+            return (temp, float('inf'), unit)
+
         # Try "between X and Y" pattern
-        between_match = re.search(r'between\s+(-?\d+)°?F?\s+and\s+(-?\d+)°?F?', question, re.IGNORECASE)
+        between_match = re.search(r'between\s+(-?\d+)\s*[FC]?\s+and\s+(-?\d+)\s*[FC]?', question, re.IGNORECASE)
         if between_match:
             low = float(between_match.group(1))
             high = float(between_match.group(2))
-            return (min(low, high), max(low, high), "F")
+            return (min(low, high), max(low, high), unit)
 
-        # Try range pattern "X-Y"
-        range_match = re.search(r'be\s+(?:between\s+)?(-?\d+)-(-?\d+)°?F?', question, re.IGNORECASE)
+        # Try range pattern "X-Y°F" or "X-YF"
+        range_match = re.search(r'be\s+(?:between\s+)?(-?\d+)-(-?\d+)\s*[FC]?', question, re.IGNORECASE)
         if range_match:
             low = float(range_match.group(1))
             high = float(range_match.group(2))
-            return (min(low, high), max(low, high), "F")
-        
+            return (min(low, high), max(low, high), unit)
+
         return None
     
     def _extract_date(self, question: str, end_time: datetime) -> str:
@@ -215,7 +217,7 @@ class WeatherMarketScanner:
         # Fall back to end_time date
         return end_time.strftime("%Y-%m-%d")
     
-    def _generate_event_slugs(self, cities: List[str], days_ahead: int = 3) -> List[str]:
+    def _generate_event_slugs(self, cities: List[str], days_ahead: int = 6) -> List[str]:
         """
         Generate expected event slugs for temperature markets.
         
@@ -252,42 +254,34 @@ class WeatherMarketScanner:
                 return None
         
         def is_current(event: Optional[Dict]) -> bool:
-            """Check if event has markets ending in the future."""
+            """Check if event has ANY market ending in the future."""
             if not event:
                 return False
             markets = event.get('markets', [])
             if not markets:
                 return False
-            end_str = markets[0].get('endDate', '')
-            try:
-                end_time = datetime.fromisoformat(end_str.replace('Z', '+00:00'))
-                return end_time > now
-            except (ValueError, TypeError):
-                return False
+            for m in markets:
+                end_str = m.get('endDate', '')
+                try:
+                    end_time = datetime.fromisoformat(end_str.replace('Z', '+00:00'))
+                    if end_time > now:
+                        return True
+                except (ValueError, TypeError):
+                    continue
+            return False
         
-        # Try base slug first
+        # Try year-suffixed slug first (current Polymarket format: base-YYYY)
+        current_year = now.year
+        event = fetch_single(f"{slug}-{current_year}")
+        if is_current(event):
+            return event
+
+        # Fall back to base slug (older format)
         event = fetch_single(slug)
         if is_current(event):
             return event
-        
-        # If stale/missing, try common suffixes (Polymarket uses various disambiguation patterns)
-        # Try year suffix first (most common for recurring events)
-        current_year = now.year
-        for year_suffix in [current_year, current_year + 1]:
-            event = fetch_single(f"{slug}-{year_suffix}")
-            if is_current(event):
-                logger.info(f"Found current event with year suffix: {slug}-{year_suffix}")
-                return event
-        
-        # Try numeric suffixes (legacy pattern)
-        for suffix in range(140, 160):
-            event = fetch_single(f"{slug}-{suffix}")
-            if is_current(event):
-                logger.info(f"Found current event with numeric suffix: {slug}-{suffix}")
-                return event
-        
-        # Return whatever we got (might be None or stale)
-        return fetch_single(slug)
+
+        return None
     
     def fetch_temperature_markets_by_slug(self, cities: List[str]) -> List[WeatherMarket]:
         """
@@ -449,20 +443,15 @@ class WeatherMarketScanner:
                     except (ValueError, KeyError, TypeError):
                         continue
         
-        # Method 2: If no markets found, try browser scraping (most reliable)
-        if not markets:
-            logger.info("No markets from API, trying browser scraping...")
-            markets = self.fetch_markets_from_browser(city_filter)
-        
-        # Method 3: If still no markets, try Graph with known IDs
-        if not markets:
-            logger.info("No markets from browser, trying Graph-based discovery...")
-            markets = self.fetch_markets_from_graph(city_filter)
-        
-        # Method 4: Last resort - try slug-based fetching
-        if not markets:
-            logger.info("No markets from Graph, trying slug-based discovery...")
-            markets = self.fetch_temperature_markets_by_slug(city_filter)
+        # Method 2: Slug-based fetching (fast, reliable, always runs)
+        logger.info("Running slug-based discovery...")
+        slug_markets = self.fetch_temperature_markets_by_slug(city_filter)
+        if slug_markets:
+            existing_ids = {m.market_id for m in markets}
+            new_markets = [m for m in slug_markets if m.market_id not in existing_ids]
+            if new_markets:
+                logger.info(f"Slug-based discovery added {len(new_markets)} additional markets")
+            markets.extend(new_markets)
         
         logger.info(f"Found {len(markets)} weather markets for cities: {city_filter}")
         return markets
