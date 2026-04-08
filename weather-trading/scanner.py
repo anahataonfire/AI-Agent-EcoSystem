@@ -9,6 +9,7 @@ import logging
 import re
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -94,8 +95,18 @@ class WeatherMarketScanner:
         "la": "los_angeles",
         "toronto": "toronto",
         "seoul": "seoul",
+        "paris": "paris",
+        "ankara": "ankara",
+        "madrid": "madrid",
+        "miami": "miami",
+        "denver": "denver",
+        "tokyo": "tokyo",
+        "berlin": "berlin",
+        "sydney": "sydney",
+        "mexico city": "mexico_city",
+        "cdmx": "mexico_city",
     }
-    
+
     # City name to use in event slugs
     CITY_SLUG_NAMES = {
         "nyc": "nyc",
@@ -106,6 +117,17 @@ class WeatherMarketScanner:
         "seattle": "seattle",
         "toronto": "toronto",
         "seoul": "seoul",
+        "chicago": "chicago",
+        "los_angeles": "los-angeles",
+        "paris": "paris",
+        "ankara": "ankara",
+        "madrid": "madrid",
+        "miami": "miami",
+        "denver": "denver",
+        "tokyo": "tokyo",
+        "berlin": "berlin",
+        "sydney": "sydney",
+        "mexico_city": "mexico-city",
     }
     
     def __init__(self, request_delay: float = 0.1, request_timeout: float = 30.0):
@@ -217,7 +239,7 @@ class WeatherMarketScanner:
         # Fall back to end_time date
         return end_time.strftime("%Y-%m-%d")
     
-    def _generate_event_slugs(self, cities: List[str], days_ahead: int = 6) -> List[str]:
+    def _generate_event_slugs(self, cities: List[str], days_ahead: int = 2) -> List[str]:
         """
         Generate expected event slugs for temperature markets.
         
@@ -247,7 +269,7 @@ class WeatherMarketScanner:
             url = f"https://gamma-api.polymarket.com/events?slug={s}"
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=15) as resp:
+                with urllib.request.urlopen(req, timeout=8) as resp:
                     data = json.loads(resp.read())
                     return data[0] if data else None
             except Exception:
@@ -283,47 +305,64 @@ class WeatherMarketScanner:
 
         return None
     
+    def _fetch_slug_worker(self, args: tuple) -> List[dict]:
+        """Worker for parallel slug fetching. Returns list of (city_key, target_date, slug, event)."""
+        city_key, target_date, slug = args
+        event = self._fetch_event_by_slug(slug)
+        if event and event.get('markets'):
+            return [(city_key, target_date, slug, event)]
+        return []
+
     def fetch_temperature_markets_by_slug(self, cities: List[str]) -> List[WeatherMarket]:
         """
         Fetch temperature markets by generating and checking slugs directly.
-        
-        This is a fallback when the standard search doesn't work.
+
+        Uses ThreadPoolExecutor for parallel fetching (19 cities would be
+        too slow sequentially).
         """
         markets = []
         now = datetime.now(timezone.utc)
         slugs = self._generate_event_slugs(cities)
-        
-        logger.info(f"Checking {len(slugs)} potential temperature event slugs...")
-        
-        for city_key, target_date, slug in slugs:
-            event = self._fetch_event_by_slug(slug)
-            if not event or not event.get('markets'):
-                logger.debug(f"No event found for slug: {slug}")
-                continue
-            
+
+        logger.info(f"Checking {len(slugs)} potential temperature event slugs (parallel)...")
+
+        # Parallel fetch -- up to 10 concurrent requests to avoid hammering the API
+        found_events = []
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            futures = {pool.submit(self._fetch_slug_worker, s): s for s in slugs}
+            for future in as_completed(futures):
+                try:
+                    results = future.result()
+                    found_events.extend(results)
+                except Exception as e:
+                    logger.debug(f"Slug fetch error: {e}")
+
+        logger.info(f"Parallel slug discovery found {len(found_events)} events")
+
+        for city_key, target_date, slug, event in found_events:
             logger.info(f"Found event: {event.get('title', slug)}")
-            
+
             for market in event.get('markets', []):
                 try:
                     question = market.get('question', '')
-                    
+
                     # Extract bucket
                     bucket = self._extract_bucket(question)
                     if not bucket:
                         continue
-                    
+
                     bucket_low, bucket_high, bucket_unit = bucket
-                    
+
                     # Parse end time
                     end_str = market.get('endDate') or market.get('end_date_iso', '')
                     try:
                         end_time = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
                     except ValueError:
                         end_time = now + timedelta(days=1)  # Default
-                    
+
                     if end_time < now:
                         continue
-                    
+
                     # Get prices
                     prices_str = market.get('outcomePrices', '[0.5]')
                     try:
@@ -331,9 +370,9 @@ class WeatherMarketScanner:
                         yes_price = float(prices[0])
                     except (ValueError, IndexError, TypeError, json.JSONDecodeError):
                         yes_price = 0.5
-                    
+
                     city_info = WEATHER_CITIES.get(city_key, {})
-                    
+
                     wm = WeatherMarket(
                         market_id=market.get('id', ''),
                         question=question,
@@ -351,12 +390,12 @@ class WeatherMarketScanner:
                         market_url=f"https://polymarket.com/event/{slug}",
                         clob_token_ids=_parse_clob_token_ids(market),
                     )
-                    
+
                     markets.append(wm)
-                    
+
                 except (ValueError, KeyError, TypeError) as e:
                     continue
-        
+
         return markets
     
     def fetch_weather_markets(self, city_filter: List[str] = None) -> List[WeatherMarket]:

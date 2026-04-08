@@ -40,7 +40,11 @@ try:
 except ImportError as e:
     logger.warning(f"Trading modules not fully loaded: {e}")
     MODULES_LOADED = False
-    ACTIVE_CITIES = ["nyc", "london", "atlanta", "seattle", "toronto"]
+    ACTIVE_CITIES = [
+        "nyc", "atlanta", "seattle", "chicago", "dallas", "los_angeles", "miami", "denver",
+        "london", "toronto", "buenos_aires", "paris", "ankara", "madrid",
+        "seoul", "tokyo", "berlin", "sydney", "mexico_city",
+    ]
 
 # Import and initialize database
 from database import init_db, save_position, load_positions, update_position_status, save_order, get_position_count, expire_stale_positions
@@ -172,12 +176,13 @@ def scan_opportunities(request: Optional[ScanRequest] = None):
         bucket_low_safe = None if bucket_low is None or bucket_low == float('-inf') else bucket_low
         bucket_high_safe = None if bucket_high is None or bucket_high == float('inf') else bucket_high
         
+        unit = getattr(opp, 'forecast_unit', 'F') or 'F'
         if bucket_low_safe is None:
-            bucket_str = f"≤{bucket_high_safe}°F"
+            bucket_str = f"≤{bucket_high_safe}°{unit}"
         elif bucket_high_safe is None:
-            bucket_str = f"≥{bucket_low_safe}°F"
+            bucket_str = f"≥{bucket_low_safe}°{unit}"
         else:
-            bucket_str = f"{bucket_low_safe}-{bucket_high_safe}°F"
+            bucket_str = f"{bucket_low_safe}-{bucket_high_safe}°{unit}"
         
         results.append({
             "id": f"{opp.city}_{opp.target_date}_{bucket_low_safe or 'below'}_{bucket_high_safe or 'above'}".replace("-", "").replace(".", "_"),
@@ -440,7 +445,8 @@ def scan_edge_harvest(request: Optional[ScanRequest] = None):
             "ecmwfTemp": opp.ecmwf_temp,
             "gfsTemp": opp.gfs_temp,
             "nwsTemp": opp.nws_temp,
-            "frontWarning": opp.front_warning,
+            "frontWarning": bool(opp.front_warning),
+            "frontWarningSeverity": opp.front_warning.severity if opp.front_warning else None,
             "frontWarningReason": opp.front_warning_reason,
             "clobTokenIds": opp.clob_token_ids,
             "marketUrl": opp.market_url,

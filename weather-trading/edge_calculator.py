@@ -84,16 +84,23 @@ class EdgeCalculator:
         self.high_edge = high_edge or EDGE_CONFIG["min_edge_trade"]
         self.std_dev_default = std_dev_24hr or EDGE_CONFIG["std_dev_default"]
     
-    def _get_std_dev(self, hours_remaining: float) -> float:
-        """Get appropriate std_dev based on time to resolution."""
-        # Simplified for now based on validated standard deviation
-        std = self.std_dev_default
-        
+    def _get_std_dev(self, hours_remaining: float, bucket_unit: str = "F") -> float:
+        """Get appropriate std_dev based on time to resolution and market unit.
+
+        The stored std_dev_default (2.5) is calibrated in °F.
+        For °C markets, convert: °C_std = °F_std / 1.8.
+        """
+        std = self.std_dev_default  # Always in °F
+
         # Scale uncertainty slightly as we look further ahead
         if hours_remaining > 24:
             scale = min(1.5, 1.0 + (hours_remaining - 24) / 48)
             std *= scale
-            
+
+        # Convert to market's unit (PD-144 R1)
+        if bucket_unit == "C":
+            std /= 1.8
+
         return std
     
     def _normalize_units(
@@ -136,8 +143,8 @@ class EdgeCalculator:
             market.bucket_unit,
         )
         
-        # Get appropriate std_dev
-        std_dev = self._get_std_dev(market.hours_remaining)
+        # Get appropriate std_dev (unit-aware: PD-144 R1)
+        std_dev = self._get_std_dev(market.hours_remaining, market.bucket_unit)
         
         # Adjust std_dev based on forecast confidence
         if forecast.confidence < 0.7:

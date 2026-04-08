@@ -84,17 +84,29 @@ EXTRACTION_SCRIPT = """
 def parse_city_from_title(title: str) -> Optional[str]:
     """Extract city key from event title."""
     title_lower = title.lower()
-    city_mappings = {
-        "nyc": "nyc", "new york": "nyc",
-        "london": "london",
-        "buenos aires": "buenos_aires",
-        "toronto": "toronto",
-        "seattle": "seattle",
-        "atlanta": "atlanta",
-        "dallas": "dallas",
-        "seoul": "seoul",
-    }
-    for pattern, city_key in city_mappings.items():
+    # Ordered longest-first to avoid partial matches (e.g., "new york" before "york")
+    city_mappings = [
+        ("new york", "nyc"), ("nyc", "nyc"),
+        ("buenos aires", "buenos_aires"),
+        ("los angeles", "los_angeles"),
+        ("mexico city", "mexico_city"),
+        ("london", "london"),
+        ("toronto", "toronto"),
+        ("seattle", "seattle"),
+        ("atlanta", "atlanta"),
+        ("dallas", "dallas"),
+        ("seoul", "seoul"),
+        ("chicago", "chicago"),
+        ("paris", "paris"),
+        ("ankara", "ankara"),
+        ("madrid", "madrid"),
+        ("miami", "miami"),
+        ("denver", "denver"),
+        ("tokyo", "tokyo"),
+        ("berlin", "berlin"),
+        ("sydney", "sydney"),
+    ]
+    for pattern, city_key in city_mappings:
         if pattern in title_lower:
             return city_key
     return None

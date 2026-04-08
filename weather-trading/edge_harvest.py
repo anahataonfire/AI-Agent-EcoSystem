@@ -1,16 +1,30 @@
 """
-Edge Harvest Scanner
+Edge Harvest Scanner (consolidated)
 
 Finds opportunities to buy NO on extreme buckets far from forecast.
 Includes risk detection for forecast uncertainty (model spread, fronts).
+
+This is the single canonical implementation. Previously split across
+edge_harvest.py and edge_harvest_scanner.py (retired in PD-144 R2).
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class FrontWarning:
+    """Warning about approaching weather front or high uncertainty."""
+    city: str
+    date: str
+    warning_type: str  # "MODEL_SPREAD", "LOW_CONFIDENCE"
+    severity: str  # "LOW", "MEDIUM", "HIGH"
+    description: str
+    model_spread: Optional[float] = None
 
 
 @dataclass
@@ -21,36 +35,36 @@ class EdgeHarvestOpportunity:
     target_date: str
     bucket_low: Optional[float]  # None for "or below"
     bucket_high: Optional[float]  # None for "or above"
-    bucket_str: str  # Display string like "≤35°F"
-    
+    bucket_str: str  # Display string like "≤35°F" or "≤10°C"
+
     # Pricing
     yes_price: float
     no_price: float
     potential_return_pct: float  # (1 - no_price) / no_price * 100
-    
+
     # Distance from forecast
     forecast_temp: float
-    bands_away: int  # How many 2°F bands from forecast
-    degrees_away: float  # Actual distance in °F
-    
+    bands_away: int  # How many bucket-widths from forecast
+    degrees_away: float  # Actual distance in native unit
+
     # Risk assessment
     risk_tier: str  # "LOW", "MEDIUM", "HIGH"
     risk_score: int  # 1-10 (10 = highest risk)
     risk_factors: List[str]  # Explanations
-    
-    # Model spread (uncertainty indicator)
+
+    # Model spread (uncertainty indicator, always in °F)
     model_spread: float  # Max - Min of model forecasts
     ecmwf_temp: Optional[float]
     gfs_temp: Optional[float]
     nws_temp: Optional[float]
-    
-    # Front warning
-    front_warning: bool
+
+    # Front warning (structured object for rich filtering)
+    front_warning: Optional[FrontWarning]
     front_warning_reason: Optional[str]
-    
+
     # Classification
     threshold_type: str  # "AGGRESSIVE" (2 bands) or "CONSERVATIVE" (3 bands)
-    
+
     # Token IDs for trading
     clob_token_ids: Tuple[Optional[str], Optional[str]]
     market_url: str
@@ -64,41 +78,58 @@ class EdgeHarvestOpportunity:
     best_bid_size: float = 0.0
     spread: float = 0.0  # ask - bid
 
+    @property
+    def bucket(self) -> str:
+        """Alias for bucket_str (backwards compatibility with auto_harvest)."""
+        return self.bucket_str
+
 
 class EdgeHarvestScanner:
     """
     Scans for edge harvest opportunities.
-    
+
     Strategy: Buy NO on buckets far from forecast to collect 0.5-2% returns.
     """
-    
+
     # Thresholds
-    AGGRESSIVE_BANDS = 2  # 4°F away - higher ROI, more risk
-    CONSERVATIVE_BANDS = 3  # 6°F away - lower ROI, safer
-    
-    # Risk thresholds
+    AGGRESSIVE_BANDS = 2  # 2 bucket-widths away - higher ROI, more risk
+    CONSERVATIVE_BANDS = 3  # 3 bucket-widths away - lower ROI, safer
+
+    # Risk thresholds (in °F; converted for °C markets)
     HIGH_MODEL_SPREAD = 6.0  # °F - indicates uncertainty
     MEDIUM_MODEL_SPREAD = 4.0  # °F
-    
+
     # Minimum return to consider
     MIN_RETURN_PCT = 0.5
-    
-    BUCKET_WIDTH = 2.0  # Standard Polymarket bucket width
+
+    # Bucket widths by unit (Polymarket standard widths)
+    BUCKET_WIDTH_F = 2.0  # °F markets (US cities)
+    BUCKET_WIDTH_C = 1.0  # °C markets (international cities)
     
     def __init__(self):
         pass
     
+    def _bucket_width(self, unit: str = "F") -> float:
+        """Get bucket width for the given temperature unit."""
+        return self.BUCKET_WIDTH_C if unit == "C" else self.BUCKET_WIDTH_F
+
     def calculate_bands_away(
-        self, 
-        forecast: float, 
-        bucket_low: Optional[float], 
-        bucket_high: Optional[float]
+        self,
+        forecast: float,
+        bucket_low: Optional[float],
+        bucket_high: Optional[float],
+        unit: str = "F",
     ) -> Tuple[int, float]:
         """
         Calculate how many bands and degrees away a bucket is from forecast.
-        
+
+        Args:
+            unit: "F" or "C" - determines bucket width used for band calculation
+
         Returns (bands_away, degrees_away)
         """
+        bucket_width = self._bucket_width(unit)
+
         # Handle "or below" buckets (bucket_low is None/-inf)
         if bucket_low is None or bucket_low == float('-inf'):
             if bucket_high is None:
@@ -107,9 +138,9 @@ class EdgeHarvestScanner:
             if forecast <= bucket_high:
                 return 0, 0
             degrees = forecast - bucket_high
-            bands = int(degrees / self.BUCKET_WIDTH)
+            bands = int(degrees / bucket_width)
             return bands, degrees
-        
+
         # Handle "or above" buckets (bucket_high is None/inf)
         if bucket_high is None or bucket_high == float('inf'):
             if bucket_low is None:
@@ -118,19 +149,19 @@ class EdgeHarvestScanner:
             if forecast >= bucket_low:
                 return 0, 0
             degrees = bucket_low - forecast
-            bands = int(degrees / self.BUCKET_WIDTH)
+            bands = int(degrees / bucket_width)
             return bands, degrees
-        
+
         # Normal bucket
         if bucket_low <= forecast <= bucket_high:
             return 0, 0
-        
+
         if forecast < bucket_low:
             degrees = bucket_low - forecast
         else:
             degrees = forecast - bucket_high
-        
-        bands = int(degrees / self.BUCKET_WIDTH)
+
+        bands = int(degrees / bucket_width)
         return bands, degrees
     
     def calculate_model_spread(
@@ -145,57 +176,92 @@ class EdgeHarvestScanner:
             return 0.0
         return max(temps) - min(temps)
     
-    def detect_front_warning(
+    def detect_front_warnings(
         self,
-        model_spread: float,
-        forecast_temp: float,
-        city: str
-    ) -> Tuple[bool, Optional[str]]:
+        city: str,
+        target_date: str,
+        forecast,  # DailyForecast
+    ) -> List[FrontWarning]:
         """
-        Detect if conditions suggest a front or high uncertainty.
-        
-        Returns (has_warning, reason)
+        Detect conditions that increase forecast uncertainty.
+
+        Returns list of FrontWarning objects (empty if no warnings).
+        Absorbed from edge_harvest_scanner.py (PD-144 R2).
         """
         warnings = []
-        
-        # High model disagreement = likely front timing uncertainty
-        if model_spread >= self.HIGH_MODEL_SPREAD:
-            warnings.append(f"High model spread ({model_spread:.1f}°F) - possible front timing uncertainty")
-        
-        # Seasonal transition periods are riskier
-        # (could add more sophisticated checks here)
-        
-        if warnings:
-            return True, "; ".join(warnings)
-        return False, None
+
+        # Check model spread (ECMWF vs GFS) -- always in °F
+        ecmwf = getattr(forecast, 'ecmwf_high', None)
+        gfs = getattr(forecast, 'gfs_high', None)
+        if ecmwf is not None and gfs is not None:
+            spread = abs(ecmwf - gfs)
+            if spread >= 8:
+                warnings.append(FrontWarning(
+                    city=city, date=target_date,
+                    warning_type="MODEL_SPREAD", severity="HIGH",
+                    description=f"Models disagree by {spread:.0f}°F -- major front likely",
+                    model_spread=spread,
+                ))
+            elif spread >= 5:
+                warnings.append(FrontWarning(
+                    city=city, date=target_date,
+                    warning_type="MODEL_SPREAD", severity="MEDIUM",
+                    description=f"Models disagree by {spread:.0f}°F -- elevated uncertainty",
+                    model_spread=spread,
+                ))
+            elif spread >= 3:
+                warnings.append(FrontWarning(
+                    city=city, date=target_date,
+                    warning_type="MODEL_SPREAD", severity="LOW",
+                    description=f"Models disagree by {spread:.0f}°F -- minor uncertainty",
+                    model_spread=spread,
+                ))
+
+        # Check forecast confidence
+        confidence = getattr(forecast, 'confidence', None)
+        if confidence is not None:
+            if confidence < 0.5:
+                warnings.append(FrontWarning(
+                    city=city, date=target_date,
+                    warning_type="LOW_CONFIDENCE", severity="HIGH",
+                    description=f"Forecast confidence only {confidence*100:.0f}%",
+                ))
+            elif confidence < 0.7:
+                warnings.append(FrontWarning(
+                    city=city, date=target_date,
+                    warning_type="LOW_CONFIDENCE", severity="MEDIUM",
+                    description=f"Forecast confidence {confidence*100:.0f}%",
+                ))
+
+        return warnings
     
     def calculate_risk(
         self,
         bands_away: int,
         degrees_away: float,
         model_spread: float,
-        front_warning: bool,
-        no_price: float
+        front_warnings: List[FrontWarning],
+        no_price: float,
     ) -> Tuple[str, int, List[str]]:
         """
         Calculate risk tier and score.
-        
+
         Returns (tier, score, factors)
         """
         score = 0
         factors = []
-        
+
         # Distance factor (lower bands = higher risk)
         if bands_away <= 2:
             score += 4
-            factors.append(f"Close to forecast ({bands_away} bands / {degrees_away:.0f}°F)")
+            factors.append(f"Close to forecast ({bands_away} bands / {degrees_away:.1f} away)")
         elif bands_away <= 3:
             score += 2
-            factors.append(f"Moderate distance ({bands_away} bands / {degrees_away:.0f}°F)")
+            factors.append(f"Moderate distance ({bands_away} bands / {degrees_away:.1f} away)")
         else:
             score += 1
-            factors.append(f"Far from forecast ({bands_away} bands / {degrees_away:.0f}°F)")
-        
+            factors.append(f"Far from forecast ({bands_away} bands / {degrees_away:.1f} away)")
+
         # Model spread factor
         if model_spread >= self.HIGH_MODEL_SPREAD:
             score += 4
@@ -203,17 +269,23 @@ class EdgeHarvestScanner:
         elif model_spread >= self.MEDIUM_MODEL_SPREAD:
             score += 2
             factors.append(f"Moderate model disagreement ({model_spread:.1f}°F spread)")
-        
-        # Front warning
-        if front_warning:
-            score += 2
-            factors.append("⚠️ Front/uncertainty warning active")
-        
+
+        # Front warnings (structured severity from FrontWarning objects)
+        for warning in front_warnings:
+            if warning.severity == "HIGH":
+                score += 4
+                factors.append(f"⚠️ {warning.description}")
+            elif warning.severity == "MEDIUM":
+                score += 2
+                factors.append(f"⚡ {warning.description}")
+            elif warning.severity == "LOW":
+                score += 1
+
         # Price factor (very cheap NO = market sees risk)
         if no_price < 0.95:
             score += 2
             factors.append(f"Market pricing higher risk (NO at ${no_price:.2f})")
-        
+
         # Determine tier
         if score >= 7:
             tier = "HIGH"
@@ -221,7 +293,7 @@ class EdgeHarvestScanner:
             tier = "MEDIUM"
         else:
             tier = "LOW"
-        
+
         return tier, min(score, 10), factors
 
     def _fetch_order_book(self, token_id: str) -> dict:
@@ -265,14 +337,17 @@ class EdgeHarvestScanner:
             forecast = forecasts.get(key)
             if not forecast:
                 continue
-            
-            forecast_temp = forecast.high_f
-            
-            # Calculate distance
+
+            # Use forecast in the market's native unit
+            unit = getattr(market, 'bucket_unit', 'F')
+            forecast_temp = forecast.high_c if unit == "C" else forecast.high_f
+
+            # Calculate distance using the market's unit for correct band width
             bands_away, degrees_away = self.calculate_bands_away(
-                forecast_temp, 
-                market.bucket_low, 
-                market.bucket_high
+                forecast_temp,
+                market.bucket_low,
+                market.bucket_high,
+                unit=unit,
             )
             
             # Skip if too close to forecast
@@ -293,22 +368,22 @@ class EdgeHarvestScanner:
             if potential_return < self.MIN_RETURN_PCT:
                 continue
             
-            # Get model data
+            # Get model data (always compare in °F for consistent spread thresholds)
             ecmwf = getattr(forecast, 'ecmwf_high', None)
             gfs = getattr(forecast, 'gfs_high', None)
             nws = getattr(forecast, 'nws_high', None)
-            
-            # Calculate model spread
+
+            # Calculate model spread (in °F for consistent risk thresholds)
             model_spread = self.calculate_model_spread(ecmwf, gfs, nws)
-            
-            # Detect front warning
-            front_warning, front_reason = self.detect_front_warning(
-                model_spread, forecast_temp, market.city_key
+
+            # Detect front warnings (structured)
+            front_warnings = self.detect_front_warnings(
+                market.city_key, market.target_date, forecast
             )
-            
+
             # Calculate risk
             risk_tier, risk_score, risk_factors = self.calculate_risk(
-                bands_away, degrees_away, model_spread, front_warning, no_price
+                bands_away, degrees_away, model_spread, front_warnings, no_price
             )
             
             # Determine threshold type
@@ -317,13 +392,13 @@ class EdgeHarvestScanner:
             else:
                 threshold_type = "AGGRESSIVE"
             
-            # Build bucket string
+            # Build bucket string using the market's native unit
             if market.bucket_low is None or market.bucket_low == float('-inf'):
-                bucket_str = f"≤{market.bucket_high}°F"
+                bucket_str = f"≤{market.bucket_high}°{unit}"
             elif market.bucket_high is None or market.bucket_high == float('inf'):
-                bucket_str = f"≥{market.bucket_low}°F"
+                bucket_str = f"≥{market.bucket_low}°{unit}"
             else:
-                bucket_str = f"{market.bucket_low}-{market.bucket_high}°F"
+                bucket_str = f"{market.bucket_low}-{market.bucket_high}°{unit}"
             
             opp = EdgeHarvestOpportunity(
                 city=market.city_key,
@@ -344,8 +419,8 @@ class EdgeHarvestScanner:
                 ecmwf_temp=round(ecmwf, 1) if ecmwf else None,
                 gfs_temp=round(gfs, 1) if gfs else None,
                 nws_temp=round(nws, 1) if nws else None,
-                front_warning=front_warning,
-                front_warning_reason=front_reason,
+                front_warning=front_warnings[0] if front_warnings else None,
+                front_warning_reason=front_warnings[0].description if front_warnings else None,
                 threshold_type=threshold_type,
                 clob_token_ids=market.clob_token_ids,
                 market_url=getattr(market, 'market_url', ''),
