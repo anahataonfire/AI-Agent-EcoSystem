@@ -102,6 +102,9 @@ class EdgeHarvestScanner:
     # Minimum return to consider
     MIN_RETURN_PCT = 0.5
 
+    # Price-based safety threshold: NO price above this = safe regardless of distance
+    SAFE_NO_PRICE = 0.90  # 90¢+ NO = genuinely conservative (≤10% YES probability)
+
     # Bucket widths by unit (Polymarket standard widths)
     BUCKET_WIDTH_F = 2.0  # °F markets (US cities)
     BUCKET_WIDTH_C = 1.0  # °C markets (international cities)
@@ -281,10 +284,20 @@ class EdgeHarvestScanner:
             elif warning.severity == "LOW":
                 score += 1
 
-        # Price factor (very cheap NO = market sees risk)
-        if no_price < 0.95:
-            score += 2
-            factors.append(f"Market pricing higher risk (NO at ${no_price:.2f})")
+        # Price factor — cheap NO means market sees real probability
+        # This is the strongest signal: the market aggregates all information
+        if no_price < 0.60:
+            score += 5
+            factors.append(f"Market pricing majority risk (NO at ${no_price:.2f}, YES >{(1-no_price)*100:.0f}%)")
+        elif no_price < 0.75:
+            score += 4
+            factors.append(f"Market pricing significant risk (NO at ${no_price:.2f}, YES >{(1-no_price)*100:.0f}%)")
+        elif no_price < 0.85:
+            score += 3
+            factors.append(f"Market pricing moderate risk (NO at ${no_price:.2f})")
+        elif no_price < 0.95:
+            score += 1
+            factors.append(f"Market pricing low risk (NO at ${no_price:.2f})")
 
         # Determine tier
         if score >= 7:
@@ -350,20 +363,20 @@ class EdgeHarvestScanner:
                 unit=unit,
             )
             
-            # Skip if too close to forecast
-            if bands_away < self.AGGRESSIVE_BANDS:
-                continue
-            
             # Get NO price (we're buying NO)
             no_price = market.no_price
             if no_price is None or no_price <= 0:
                 no_price = 1.0 - market.yes_price
-            
+
+            # Skip if too close to forecast — UNLESS NO price is high (safe trade)
+            if bands_away < self.AGGRESSIVE_BANDS and no_price < self.SAFE_NO_PRICE:
+                continue
+
             # Calculate potential return
             if no_price >= 1.0:
                 continue
             potential_return = (1.0 - no_price) / no_price * 100
-            
+
             # Skip if return too low
             if potential_return < self.MIN_RETURN_PCT:
                 continue
@@ -386,8 +399,12 @@ class EdgeHarvestScanner:
                 bands_away, degrees_away, model_spread, front_warnings, no_price
             )
             
-            # Determine threshold type
-            if bands_away >= self.CONSERVATIVE_BANDS:
+            # Determine threshold type — price-based, not just distance
+            # High NO price (≥90¢) = conservative regardless of distance
+            # Low NO price on a far bucket = the market disagrees with forecast, that's aggressive
+            if no_price >= self.SAFE_NO_PRICE:
+                threshold_type = "CONSERVATIVE"
+            elif bands_away >= self.CONSERVATIVE_BANDS and no_price >= 0.80:
                 threshold_type = "CONSERVATIVE"
             else:
                 threshold_type = "AGGRESSIVE"

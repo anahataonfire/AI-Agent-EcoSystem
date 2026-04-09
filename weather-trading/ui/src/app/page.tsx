@@ -135,7 +135,15 @@ const OpportunityRow = ({ opt, onTrade, trading }: { opt: Opportunity, onTrade: 
 
 const EdgeHarvestRow = ({ opp, onTrade, trading }: { opp: any, onTrade: (opp: any, size: number) => void, trading: boolean }) => {
   const dollarLiquidity = (opp.bestAskSize ?? 0) * (opp.bestAskPrice ?? 0);
-  const [size, setSize] = React.useState(Math.min(Math.floor(dollarLiquidity), 100));
+  const isConservative = opp.thresholdType === 'CONSERVATIVE' && opp.riskTier === 'LOW';
+  const maxSize = isConservative
+    ? Math.floor(dollarLiquidity)
+    : Math.floor(Math.min(dollarLiquidity * 0.5, 100));
+  const [size, setSize] = React.useState(maxSize);
+
+  React.useEffect(() => {
+    setSize(maxSize);
+  }, [maxSize]);
 
   const riskColor = opp.riskTier === 'LOW' ? 'text-emerald-400' : opp.riskTier === 'MEDIUM' ? 'text-yellow-400' : 'text-rose-400';
   const riskBg = opp.riskTier === 'LOW' ? 'bg-emerald-500/10' : opp.riskTier === 'MEDIUM' ? 'bg-yellow-500/10' : 'bg-rose-500/10';
