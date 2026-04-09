@@ -55,6 +55,7 @@ VPN_VERIFY_HOST = "clob.polymarket.com"
 MIN_RETURN_PCT = 0.5          # Minimum 0.5% return
 MAX_RISK_SCORE = 4            # LOW risk only (score <= 4)
 CONSERVATIVE_ONLY = True      # Only 3+ bands away
+MIN_NO_PRICE = 0.75           # Hard floor: never buy NO below 75c (PD-147)
 CONNECTIVITY_TIMEOUT = 15     # Seconds to wait for VPN connectivity
 
 
@@ -170,6 +171,10 @@ def filter_opportunities(opportunities: list) -> list:
         if CONSERVATIVE_ONLY and opp.threshold_type != "CONSERVATIVE":
             continue
 
+        # Price floor: never buy NO below MIN_NO_PRICE (PD-147, belt-and-suspenders)
+        if opp.no_price < MIN_NO_PRICE:
+            continue
+
         # Return threshold
         if opp.potential_return_pct < MIN_RETURN_PCT:
             continue
@@ -196,6 +201,10 @@ def calculate_wager(available_balance: float, num_opportunities: int, opp) -> fl
         return 0.0
 
     per_trade = available_balance / num_opportunities
+
+    # Cap at 10% of available balance per trade (PD-147)
+    max_per_trade = available_balance * 0.10
+    per_trade = min(per_trade, max_per_trade)
 
     # Cap at 50% of reported market liquidity to avoid slippage
     if opp.liquidity and opp.liquidity > 0:

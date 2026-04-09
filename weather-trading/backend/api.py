@@ -245,6 +245,15 @@ async def execute_trade(request: TradeRequest):
     if size > state.bankroll - deployed:
         raise HTTPException(400, f"Insufficient funds. Available: ${state.bankroll - deployed:.2f}")
     
+    # Safety gate for edge harvest trades (PD-147)
+    if opp.get("thresholdType"):
+        no_price = opp.get("bestAskPrice") or opp.get("noPrice", 0)
+        if no_price < 0.60:
+            raise HTTPException(400, f"Safety floor: NO price ${no_price:.2f} too low (min $0.60)")
+        risk = opp.get("riskScore", 0)
+        if risk >= 8:
+            raise HTTPException(400, f"Safety gate: risk score {risk}/10 exceeds limit")
+
     # Determine side for edge harvest (always NO)
     side = request.side
     if side == "NO" or opp.get("thresholdType"):

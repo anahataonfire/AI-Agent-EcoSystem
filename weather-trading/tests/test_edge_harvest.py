@@ -260,6 +260,124 @@ class TestOpportunityBackwardsCompat(unittest.TestCase):
         self.assertEqual(opp.front_warning.severity, "HIGH")
 
 
+class TestClassification(unittest.TestCase):
+    """PD-147: CONSERVATIVE/AGGRESSIVE must be price-primary, not bands-only."""
+
+    def setUp(self):
+        self.scanner = EdgeHarvestScanner()
+
+    def _classify(self, no_price, bands_away):
+        """Helper: run find_opportunities classification logic inline."""
+        if no_price >= self.scanner.SAFE_NO_PRICE:
+            return "CONSERVATIVE"
+        elif bands_away >= self.scanner.CONSERVATIVE_BANDS and no_price >= 0.80:
+            return "CONSERVATIVE"
+        return "AGGRESSIVE"
+
+    def test_high_no_price_always_conservative(self):
+        # NO at 97c is safe regardless of distance
+        self.assertEqual(self._classify(no_price=0.97, bands_away=1), "CONSERVATIVE")
+
+    def test_low_no_price_always_aggressive(self):
+        # NO at 50c is a coin flip — never conservative
+        self.assertEqual(self._classify(no_price=0.50, bands_away=6), "AGGRESSIVE")
+
+    def test_moderate_price_with_distance(self):
+        # NO at 82c and 4 bands = conservative (both conditions met)
+        self.assertEqual(self._classify(no_price=0.82, bands_away=4), "CONSERVATIVE")
+
+    def test_moderate_price_without_distance(self):
+        # NO at 82c but only 2 bands = aggressive (distance too low)
+        self.assertEqual(self._classify(no_price=0.82, bands_away=2), "AGGRESSIVE")
+
+    def test_coin_flip_never_conservative(self):
+        # NO at 43c with 10 bands — market says >50% chance, never safe
+        self.assertEqual(self._classify(no_price=0.43, bands_away=10), "AGGRESSIVE")
+
+    def test_chicago_scenario_56f_plus(self):
+        # The HOLMES-077 scenario: forecast 44F, bucket 56F+, market says 57% YES
+        # NO at ~43c, 6 bands away — must be AGGRESSIVE
+        self.assertEqual(self._classify(no_price=0.43, bands_away=6), "AGGRESSIVE")
+
+    def test_chicago_scenario_50_51f(self):
+        # The safe trade Holmes identified: NO at ~97c, 3 bands
+        # Must be CONSERVATIVE (price-primary path)
+        self.assertEqual(self._classify(no_price=0.97, bands_away=3), "CONSERVATIVE")
+
+
+class TestGraduatedRiskScoring(unittest.TestCase):
+    """PD-147: Risk scoring must weight NO price as strongest signal."""
+
+    def setUp(self):
+        self.scanner = EdgeHarvestScanner()
+
+    def test_coin_flip_scores_high(self):
+        # NO at 43c — price factor should add +5
+        _, score, factors = self.scanner.calculate_risk(
+            bands_away=6, degrees_away=12.0, model_spread=1.0,
+            front_warnings=[], no_price=0.43,
+        )
+        price_factors = [f for f in factors if "majority risk" in f.lower()]
+        self.assertEqual(len(price_factors), 1)
+        self.assertGreaterEqual(score, 6)  # distance +1, price +5
+
+    def test_near_certain_no_price_penalty(self):
+        # NO at 97c — no price penalty
+        _, score, factors = self.scanner.calculate_risk(
+            bands_away=5, degrees_away=10.0, model_spread=1.0,
+            front_warnings=[], no_price=0.97,
+        )
+        price_factors = [f for f in factors if "risk" in f.lower() and "NO" in f]
+        self.assertEqual(len(price_factors), 0)
+        self.assertLessEqual(score, 2)  # distance +1 only
+
+    def test_moderate_price_scores_three(self):
+        # NO at 82c — should add +3
+        _, score, factors = self.scanner.calculate_risk(
+            bands_away=5, degrees_away=10.0, model_spread=1.0,
+            front_warnings=[], no_price=0.82,
+        )
+        price_factors = [f for f in factors if "moderate risk" in f.lower()]
+        self.assertEqual(len(price_factors), 1)
+
+    def test_total_risk_chicago_56f_bucket(self):
+        # Full Chicago scenario: 6 bands, NO at 43c
+        tier, score, _ = self.scanner.calculate_risk(
+            bands_away=6, degrees_away=12.0, model_spread=2.0,
+            front_warnings=[], no_price=0.43,
+        )
+        # distance +1, price +5 = 6 minimum → MEDIUM or higher
+        self.assertIn(tier, ["MEDIUM", "HIGH"])
+        self.assertGreaterEqual(score, 6)
+
+
+class TestAutoHarvestFilter(unittest.TestCase):
+    """PD-147: auto_harvest price floor and sizing cap."""
+
+    def test_price_floor_constant(self):
+        """MIN_NO_PRICE must be defined and >= 0.75."""
+        import auto_harvest
+        self.assertGreaterEqual(auto_harvest.MIN_NO_PRICE, 0.75)
+
+    def test_sizing_cap_with_single_opp(self):
+        """With $1000 balance and 1 opp, wager should cap at $100 (10%)."""
+        import auto_harvest
+        from unittest.mock import MagicMock
+        opp = MagicMock()
+        opp.liquidity = 5000  # high liquidity, shouldn't be the binding constraint
+        result = auto_harvest.calculate_wager(1000.0, 1, opp)
+        self.assertLessEqual(result, 100.0)
+
+    def test_sizing_cap_with_many_opps(self):
+        """With $1000 and 20 opps, per-trade = $50 (< 10% cap)."""
+        import auto_harvest
+        from unittest.mock import MagicMock
+        opp = MagicMock()
+        opp.liquidity = 5000
+        result = auto_harvest.calculate_wager(1000.0, 20, opp)
+        self.assertLessEqual(result, 50.0)
+
+
 class TestGetSingleton(unittest.TestCase):
     def test_get_edge_harvest_scanner_returns_instance(self):
         s = get_edge_harvest_scanner()

@@ -48,6 +48,7 @@ export interface EdgeHarvestOpportunity {
     gfsTemp: number | null;
     nwsTemp: number | null;
     frontWarning: boolean;
+    frontWarningSeverity: 'LOW' | 'MEDIUM' | 'HIGH' | null;
     frontWarningReason: string | null;
     clobTokenIds: [string, string];
     marketUrl: string;
