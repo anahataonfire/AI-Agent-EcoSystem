@@ -134,7 +134,8 @@ const OpportunityRow = ({ opt, onTrade, trading }: { opt: Opportunity, onTrade: 
 };
 
 const EdgeHarvestRow = ({ opp, onTrade, trading }: { opp: any, onTrade: (opp: any, size: number) => void, trading: boolean }) => {
-  const [size, setSize] = React.useState(Math.min(Math.floor(opp.bestAskPrice > 0 ? (opp.bestAskSize ?? 50) : 50), 100));
+  const dollarLiquidity = (opp.bestAskSize ?? 0) * (opp.bestAskPrice ?? 0);
+  const [size, setSize] = React.useState(Math.min(Math.floor(dollarLiquidity), 100));
 
   const riskColor = opp.riskTier === 'LOW' ? 'text-emerald-400' : opp.riskTier === 'MEDIUM' ? 'text-yellow-400' : 'text-rose-400';
   const riskBg = opp.riskTier === 'LOW' ? 'bg-emerald-500/10' : opp.riskTier === 'MEDIUM' ? 'bg-yellow-500/10' : 'bg-rose-500/10';
@@ -168,7 +169,7 @@ const EdgeHarvestRow = ({ opp, onTrade, trading }: { opp: any, onTrade: (opp: an
         <span className="text-xs text-zinc-500 ml-1">({(opp.degreesAway ?? 0).toFixed(0)}°F)</span>
       </td>
       <td className="px-4 py-3 text-sm text-gray-300">${(opp.bestAskPrice ?? opp.noPrice ?? 0).toFixed(2)}</td>
-      <td className="px-4 py-3 text-sm text-gray-400">{(opp.bestAskSize ?? 0).toFixed(0)}</td>
+      <td className="px-4 py-3 text-sm text-gray-400">${dollarLiquidity.toFixed(0)}</td>
       <td className="px-3 py-4">
         <span className="text-sm font-semibold text-emerald-400">{(opp.potentialReturnPct ?? 0).toFixed(1)}%</span>
       </td>
