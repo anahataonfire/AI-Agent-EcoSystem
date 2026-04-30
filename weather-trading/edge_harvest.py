@@ -1,19 +1,43 @@
 """
 Edge Harvest Scanner (consolidated)
 
-Finds opportunities to buy NO on extreme buckets far from forecast.
+Finds near-certain small-margin trades: BUY NO on buckets far from forecast,
+BUY YES on buckets containing the forecast. Both sides produce high-price
+low-return trades when model and market strongly agree on directional outcome.
 Includes risk detection for forecast uncertainty (model spread, fronts).
 
 This is the single canonical implementation. Previously split across
 edge_harvest.py and edge_harvest_scanner.py (retired in PD-144 R2).
+YES-side symmetry added in PD-195.
 """
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+# PD-221: cached read-only V2 ClobClient for orderbook reads.
+# No key required (orderbook reads are public per Polymarket V2 docs).
+# Avoids per-call PolymarketExecutor reinstantiation + credential-derive
+# network call that was the V1→V2 migration breakage in _fetch_order_book.
+# Codex Falsifier F2 polish: double-check lock prevents duplicate construction.
+_RO_CLIENT = None
+_RO_CLIENT_LOCK = threading.Lock()
+
+
+def _get_ro_client():
+    """Cached read-only V2 ClobClient for orderbook reads."""
+    global _RO_CLIENT
+    if _RO_CLIENT is None:
+        with _RO_CLIENT_LOCK:
+            if _RO_CLIENT is None:
+                from py_clob_client_v2 import ClobClient
+                _RO_CLIENT = ClobClient(host="https://clob.polymarket.com", chain_id=137)
+    return _RO_CLIENT
 
 
 @dataclass
@@ -78,6 +102,9 @@ class EdgeHarvestOpportunity:
     best_bid_size: float = 0.0
     spread: float = 0.0  # ask - bid
 
+    # PD-195: "NO" (buy NO far from forecast) or "YES" (buy YES inside forecast band)
+    recommended_side: str = "NO"
+
     @property
     def bucket(self) -> str:
         """Alias for bucket_str (backwards compatibility with auto_harvest)."""
@@ -99,11 +126,12 @@ class EdgeHarvestScanner:
     HIGH_MODEL_SPREAD = 6.0  # °F - indicates uncertainty
     MEDIUM_MODEL_SPREAD = 4.0  # °F
 
-    # Minimum return to consider
-    MIN_RETURN_PCT = 0.5
+    # Minimum return to consider (PD-195: lowered from 0.5 to 0.1 to keep 99.1¢+ trades)
+    MIN_RETURN_PCT = 0.1
 
-    # Price-based safety threshold: NO price above this = safe regardless of distance
-    SAFE_NO_PRICE = 0.90  # 90¢+ NO = genuinely conservative (≤10% YES probability)
+    # Price-based safety thresholds: price above this = safe regardless of distance
+    SAFE_NO_PRICE = 0.90   # 90¢+ NO = genuinely conservative (≤10% YES probability)
+    SAFE_YES_PRICE = 0.90  # 90¢+ YES = near-certain hit (PD-195 YES-side mirror)
 
     # Bucket widths by unit (Polymarket standard widths)
     BUCKET_WIDTH_F = 2.0  # °F markets (US cities)
@@ -244,26 +272,41 @@ class EdgeHarvestScanner:
         degrees_away: float,
         model_spread: float,
         front_warnings: List[FrontWarning],
-        no_price: float,
+        price: Optional[float] = None,
+        side: str = "NO",
+        no_price: Optional[float] = None,  # legacy alias, accepted for backwards compat
     ) -> Tuple[str, int, List[str]]:
         """
-        Calculate risk tier and score.
+        Calculate risk tier and score (PD-195: side-aware messaging, math unchanged).
+
+        For NO trades: bands_away = distance from forecast to bucket; price = no_price.
+        For YES trades: bands_away = margin from forecast to nearest bucket boundary; price = yes_price.
+        In both cases, larger bands_away = safer, higher price = safer.
 
         Returns (tier, score, factors)
         """
+        # Backwards compatibility: accept legacy `no_price` kwarg
+        if price is None:
+            price = no_price
+        if price is None:
+            raise TypeError("calculate_risk requires 'price' (or legacy 'no_price') kwarg")
         score = 0
         factors = []
 
-        # Distance factor (lower bands = higher risk)
+        # Distance factor (lower bands = higher risk; interpretation differs by side)
+        if side == "YES":
+            distance_label = "boundary"
+        else:
+            distance_label = "forecast"
         if bands_away <= 2:
             score += 4
-            factors.append(f"Close to forecast ({bands_away} bands / {degrees_away:.1f} away)")
+            factors.append(f"Close to {distance_label} ({bands_away} bands / {degrees_away:.1f} away)")
         elif bands_away <= 3:
             score += 2
             factors.append(f"Moderate distance ({bands_away} bands / {degrees_away:.1f} away)")
         else:
             score += 1
-            factors.append(f"Far from forecast ({bands_away} bands / {degrees_away:.1f} away)")
+            factors.append(f"Far from {distance_label} ({bands_away} bands / {degrees_away:.1f} away)")
 
         # Model spread factor
         if model_spread >= self.HIGH_MODEL_SPREAD:
@@ -284,20 +327,21 @@ class EdgeHarvestScanner:
             elif warning.severity == "LOW":
                 score += 1
 
-        # Price factor — cheap NO means market sees real probability
+        # Price factor — low price means market disagrees with our directional call
         # This is the strongest signal: the market aggregates all information
-        if no_price < 0.60:
+        other_side = "YES" if side == "NO" else "NO"
+        if price < 0.60:
             score += 5
-            factors.append(f"Market pricing majority risk (NO at ${no_price:.2f}, YES >{(1-no_price)*100:.0f}%)")
-        elif no_price < 0.75:
+            factors.append(f"Market pricing majority risk ({side} at ${price:.2f}, {other_side} >{(1-price)*100:.0f}%)")
+        elif price < 0.75:
             score += 4
-            factors.append(f"Market pricing significant risk (NO at ${no_price:.2f}, YES >{(1-no_price)*100:.0f}%)")
-        elif no_price < 0.85:
+            factors.append(f"Market pricing significant risk ({side} at ${price:.2f}, {other_side} >{(1-price)*100:.0f}%)")
+        elif price < 0.85:
             score += 3
-            factors.append(f"Market pricing moderate risk (NO at ${no_price:.2f})")
-        elif no_price < 0.95:
+            factors.append(f"Market pricing moderate risk ({side} at ${price:.2f})")
+        elif price < 0.95:
             score += 1
-            factors.append(f"Market pricing low risk (NO at ${no_price:.2f})")
+            factors.append(f"Market pricing low risk ({side} at ${price:.2f})")
 
         # Determine tier
         if score >= 7:
@@ -310,17 +354,31 @@ class EdgeHarvestScanner:
         return tier, min(score, 10), factors
 
     def _fetch_order_book(self, token_id: str) -> dict:
-        """Fetch order book for a token. Returns best bid/ask info."""
+        """Fetch order book for a token. Returns best bid/ask info.
+
+        PD-221: V2 ClobClient.get_order_book returns dict (not object). Uses
+        module-cached read-only client to avoid per-call credential derive.
+        Sort: bids ascending (best=last), asks descending (best=last).
+        Verified empirically against LA + Dem Pres 2028 markets + V2 SDK
+        get_price helper cross-check.
+        """
         try:
-            from executor import PolymarketExecutor
-            executor = PolymarketExecutor(dry_run=False)
-            book = executor.client.get_order_book(token_id)
-            
-            best_ask = float(book.asks[-1].price) if book.asks else 0.0
-            best_ask_size = float(book.asks[-1].size) if book.asks else 0.0
-            best_bid = float(book.bids[-1].price) if book.bids else 0.0
-            best_bid_size = float(book.bids[-1].size) if book.bids else 0.0
-            
+            client = _get_ro_client()
+            book = client.get_order_book(token_id)
+
+            # Codex F6: error-shaped 200 dicts must surface, not silently zero out.
+            if isinstance(book, dict) and "error" in book:
+                logger.warning(f"Orderbook returned error for token_id={token_id}: {book['error']}")
+                return {"best_ask_price": 0.0, "best_ask_size": 0.0,
+                        "best_bid_price": 0.0, "best_bid_size": 0.0, "spread": 0.0}
+
+            bids = book.get("bids", [])
+            asks = book.get("asks", [])
+            best_ask = float(asks[-1]["price"]) if asks else 0.0
+            best_ask_size = float(asks[-1]["size"]) if asks else 0.0
+            best_bid = float(bids[-1]["price"]) if bids else 0.0
+            best_bid_size = float(bids[-1]["size"]) if bids else 0.0
+
             return {
                 "best_ask_price": best_ask,
                 "best_ask_size": best_ask_size,
@@ -351,115 +409,171 @@ class EdgeHarvestScanner:
             if not forecast:
                 continue
 
-            # Use forecast in the market's native unit
+            # Shared computation (PD-195: hoisted so YES branch can reuse)
             unit = getattr(market, 'bucket_unit', 'F')
             forecast_temp = forecast.high_c if unit == "C" else forecast.high_f
 
-            # Calculate distance using the market's unit for correct band width
             bands_away, degrees_away = self.calculate_bands_away(
                 forecast_temp,
                 market.bucket_low,
                 market.bucket_high,
                 unit=unit,
             )
-            
-            # Get NO price (we're buying NO)
+
             no_price = market.no_price
             if no_price is None or no_price <= 0:
-                no_price = 1.0 - market.yes_price
+                no_price = 1.0 - (market.yes_price or 0)
 
-            # Skip if too close to forecast — UNLESS NO price is high (safe trade)
-            if bands_away < self.AGGRESSIVE_BANDS and no_price < self.SAFE_NO_PRICE:
-                continue
-
-            # Calculate potential return
-            if no_price >= 1.0:
-                continue
-            potential_return = (1.0 - no_price) / no_price * 100
-
-            # Skip if return too low
-            if potential_return < self.MIN_RETURN_PCT:
-                continue
-            
-            # Get model data (always compare in °F for consistent spread thresholds)
             ecmwf = getattr(forecast, 'ecmwf_high', None)
             gfs = getattr(forecast, 'gfs_high', None)
             nws = getattr(forecast, 'nws_high', None)
-
-            # Calculate model spread (in °F for consistent risk thresholds)
             model_spread = self.calculate_model_spread(ecmwf, gfs, nws)
-
-            # Detect front warnings (structured)
             front_warnings = self.detect_front_warnings(
                 market.city_key, market.target_date, forecast
             )
 
-            # Calculate risk
-            risk_tier, risk_score, risk_factors = self.calculate_risk(
-                bands_away, degrees_away, model_spread, front_warnings, no_price
-            )
-            
-            # Determine threshold type — price-based, not just distance
-            # High NO price (≥90¢) = conservative regardless of distance
-            # Low NO price on a far bucket = the market disagrees with forecast, that's aggressive
-            if no_price >= self.SAFE_NO_PRICE:
-                threshold_type = "CONSERVATIVE"
-            elif bands_away >= self.CONSERVATIVE_BANDS and no_price >= 0.80:
-                threshold_type = "CONSERVATIVE"
-            else:
-                threshold_type = "AGGRESSIVE"
-            
-            # Build bucket string using the market's native unit
             if market.bucket_low is None or market.bucket_low == float('-inf'):
                 bucket_str = f"≤{market.bucket_high}°{unit}"
             elif market.bucket_high is None or market.bucket_high == float('inf'):
                 bucket_str = f"≥{market.bucket_low}°{unit}"
             else:
                 bucket_str = f"{market.bucket_low}-{market.bucket_high}°{unit}"
-            
-            opp = EdgeHarvestOpportunity(
-                city=market.city_key,
-                target_date=market.target_date,
-                bucket_low=market.bucket_low if market.bucket_low != float('-inf') else None,
-                bucket_high=market.bucket_high if market.bucket_high != float('inf') else None,
-                bucket_str=bucket_str,
-                yes_price=market.yes_price,
-                no_price=no_price,
-                potential_return_pct=round(potential_return, 2),
-                forecast_temp=round(forecast_temp, 1),
-                bands_away=bands_away,
-                degrees_away=round(degrees_away, 1),
-                risk_tier=risk_tier,
-                risk_score=risk_score,
-                risk_factors=risk_factors,
-                model_spread=round(model_spread, 1),
-                ecmwf_temp=round(ecmwf, 1) if ecmwf else None,
-                gfs_temp=round(gfs, 1) if gfs else None,
-                nws_temp=round(nws, 1) if nws else None,
-                front_warning=front_warnings[0] if front_warnings else None,
-                front_warning_reason=front_warnings[0].description if front_warnings else None,
-                threshold_type=threshold_type,
-                clob_token_ids=market.clob_token_ids,
-                market_url=getattr(market, 'market_url', ''),
-                liquidity=getattr(market, 'liquidity', 0),
-                hours_remaining=getattr(market, 'hours_remaining', 0),
-            )
-            
-            # Fetch order book for NO token (index 1)
-            no_token_id = market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None
-            if no_token_id:
-                ob_data = self._fetch_order_book(no_token_id)
-                opp.best_ask_price = ob_data["best_ask_price"]
-                opp.best_ask_size = ob_data["best_ask_size"]
-                opp.best_bid_price = ob_data["best_bid_price"]
-                opp.best_bid_size = ob_data["best_bid_size"]
-                opp.spread = ob_data["spread"]
-                
-                # Recalculate return based on actual ask price
-                if opp.best_ask_price > 0:
-                    opp.potential_return_pct = ((1.0 - opp.best_ask_price) / opp.best_ask_price) * 100
-            
-            opportunities.append(opp)
+
+            # --- NO-side evaluation ---
+            no_passes = True
+            if bands_away < self.AGGRESSIVE_BANDS and no_price < self.SAFE_NO_PRICE:
+                no_passes = False
+            if no_price >= 1.0:
+                no_passes = False
+            potential_return = 0.0
+            if no_passes:
+                potential_return = (1.0 - no_price) / no_price * 100
+                if potential_return < self.MIN_RETURN_PCT:
+                    no_passes = False
+
+            if no_passes:
+                risk_tier, risk_score, risk_factors = self.calculate_risk(
+                    bands_away, degrees_away, model_spread, front_warnings,
+                    price=no_price, side="NO",
+                )
+                if no_price >= self.SAFE_NO_PRICE:
+                    threshold_type = "CONSERVATIVE"
+                elif bands_away >= self.CONSERVATIVE_BANDS and no_price >= 0.80:
+                    threshold_type = "CONSERVATIVE"
+                else:
+                    threshold_type = "AGGRESSIVE"
+
+                no_opp = EdgeHarvestOpportunity(
+                    city=market.city_key,
+                    target_date=market.target_date,
+                    bucket_low=market.bucket_low if market.bucket_low != float('-inf') else None,
+                    bucket_high=market.bucket_high if market.bucket_high != float('inf') else None,
+                    bucket_str=bucket_str,
+                    yes_price=market.yes_price,
+                    no_price=no_price,
+                    potential_return_pct=round(potential_return, 2),
+                    forecast_temp=round(forecast_temp, 1),
+                    bands_away=bands_away,
+                    degrees_away=round(degrees_away, 1),
+                    risk_tier=risk_tier,
+                    risk_score=risk_score,
+                    risk_factors=risk_factors,
+                    model_spread=round(model_spread, 1),
+                    ecmwf_temp=round(ecmwf, 1) if ecmwf else None,
+                    gfs_temp=round(gfs, 1) if gfs else None,
+                    nws_temp=round(nws, 1) if nws else None,
+                    front_warning=front_warnings[0] if front_warnings else None,
+                    front_warning_reason=front_warnings[0].description if front_warnings else None,
+                    threshold_type=threshold_type,
+                    clob_token_ids=market.clob_token_ids,
+                    market_url=getattr(market, 'market_url', ''),
+                    liquidity=getattr(market, 'liquidity', 0),
+                    hours_remaining=getattr(market, 'hours_remaining', 0),
+                    recommended_side="NO",
+                )
+                no_token_id = market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None
+                if no_token_id:
+                    ob_data = self._fetch_order_book(no_token_id)
+                    no_opp.best_ask_price = ob_data["best_ask_price"]
+                    no_opp.best_ask_size = ob_data["best_ask_size"]
+                    no_opp.best_bid_price = ob_data["best_bid_price"]
+                    no_opp.best_bid_size = ob_data["best_bid_size"]
+                    no_opp.spread = ob_data["spread"]
+                    if no_opp.best_ask_price > 0:
+                        no_opp.potential_return_pct = ((1.0 - no_opp.best_ask_price) / no_opp.best_ask_price) * 100
+                opportunities.append(no_opp)
+
+            # --- YES-side evaluation (PD-195): forecast inside band, high YES price ---
+            # Includes open-ended bands (≤X°F when forecast < X; ≥X°F when forecast > X)
+            b_low = market.bucket_low
+            b_high = market.bucket_high
+            forecast_in_band = False
+            if b_low is None or b_low == float('-inf'):
+                forecast_in_band = (b_high is not None and forecast_temp <= b_high)
+            elif b_high is None or b_high == float('inf'):
+                forecast_in_band = (b_low is not None and forecast_temp >= b_low)
+            else:
+                forecast_in_band = (b_low <= forecast_temp <= b_high)
+            if forecast_in_band:
+                yes_price = market.yes_price
+                if yes_price is None or yes_price <= 0:
+                    yes_price = 1.0 - (market.no_price or 0)
+                if self.SAFE_YES_PRICE <= yes_price < 1.0:
+                    yes_return = (1.0 - yes_price) / yes_price * 100
+                    if yes_return >= self.MIN_RETURN_PCT:
+                        # Margin = distance from forecast to nearest bucket boundary.
+                        # Open-ended bands: only the bounded side matters.
+                        margin_candidates = []
+                        if b_low is not None and b_low != float('-inf'):
+                            margin_candidates.append(forecast_temp - b_low)
+                        if b_high is not None and b_high != float('inf'):
+                            margin_candidates.append(b_high - forecast_temp)
+                        margin = min(margin_candidates) if margin_candidates else 0.0
+                        margin_bands = int(margin / self._bucket_width(unit))
+                        y_tier, y_score, y_factors = self.calculate_risk(
+                            margin_bands, margin, model_spread, front_warnings,
+                            price=yes_price, side="YES",
+                        )
+                        y_thresh = "CONSERVATIVE" if yes_price >= self.SAFE_YES_PRICE else "AGGRESSIVE"
+                        yes_opp = EdgeHarvestOpportunity(
+                            city=market.city_key,
+                            target_date=market.target_date,
+                            bucket_low=market.bucket_low if market.bucket_low != float('-inf') else None,
+                            bucket_high=market.bucket_high if market.bucket_high != float('inf') else None,
+                            bucket_str=bucket_str,
+                            yes_price=yes_price,
+                            no_price=market.no_price if market.no_price is not None else (1.0 - yes_price),
+                            potential_return_pct=round(yes_return, 2),
+                            forecast_temp=round(forecast_temp, 1),
+                            bands_away=margin_bands,
+                            degrees_away=round(margin, 1),
+                            risk_tier=y_tier,
+                            risk_score=y_score,
+                            risk_factors=y_factors,
+                            model_spread=round(model_spread, 1),
+                            ecmwf_temp=round(ecmwf, 1) if ecmwf else None,
+                            gfs_temp=round(gfs, 1) if gfs else None,
+                            nws_temp=round(nws, 1) if nws else None,
+                            front_warning=front_warnings[0] if front_warnings else None,
+                            front_warning_reason=front_warnings[0].description if front_warnings else None,
+                            threshold_type=y_thresh,
+                            clob_token_ids=market.clob_token_ids,
+                            market_url=getattr(market, 'market_url', ''),
+                            liquidity=getattr(market, 'liquidity', 0),
+                            hours_remaining=getattr(market, 'hours_remaining', 0),
+                            recommended_side="YES",
+                        )
+                        yes_token_id = market.clob_token_ids[0] if len(market.clob_token_ids) > 0 else None
+                        if yes_token_id:
+                            ob_data = self._fetch_order_book(yes_token_id)
+                            yes_opp.best_ask_price = ob_data["best_ask_price"]
+                            yes_opp.best_ask_size = ob_data["best_ask_size"]
+                            yes_opp.best_bid_price = ob_data["best_bid_price"]
+                            yes_opp.best_bid_size = ob_data["best_bid_size"]
+                            yes_opp.spread = ob_data["spread"]
+                            if yes_opp.best_ask_price > 0:
+                                yes_opp.potential_return_pct = ((1.0 - yes_opp.best_ask_price) / yes_opp.best_ask_price) * 100
+                        opportunities.append(yes_opp)
         
         # Sort by potential return (highest first)
         opportunities.sort(key=lambda x: x.potential_return_pct, reverse=True)

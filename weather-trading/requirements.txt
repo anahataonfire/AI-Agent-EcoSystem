@@ -13,7 +13,7 @@ python-telegram-bot>=20.0
 playwright>=1.40.0
 
 # Optional: For the CLOB trading client
-py-clob-client>=0.17.0
+py-clob-client-v2>=1.0.0
 
 # Backend: FastAPI
 fastapi>=0.100.0

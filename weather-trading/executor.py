@@ -27,39 +27,46 @@ class PolymarketExecutor:
     
     def _init_client(self):
         try:
-            from py_clob_client.client import ClobClient
-            from py_clob_client.clob_types import ApiCreds
+            from py_clob_client_v2 import ClobClient
             from dotenv import load_dotenv
             from pathlib import Path
-            
+
             # Load environment variables from .env (check both current and parent dir)
             env_path = Path(__file__).parent / ".env"
             if not env_path.exists():
                 env_path = Path(__file__).parent.parent / ".env"
             load_dotenv(env_path)
-            
+
             private_key = os.environ.get("POLY_PRIVATE_KEY")
             if not private_key:
                 logger.warning("POLY_PRIVATE_KEY not found. Live trading will fail until provided.")
                 return
 
-            # Proxy wallet address (where funds are held on Polymarket)
             funder = os.environ.get("POLY_FUNDER_ADDRESS", "0xB90588CE64AD8792019cc494ea815E59b5071640")
-            
+
+            # PD-220 (HOLMES-092): V2 SDK migration post-Polymarket CLOB V2 cutover
+            # 2026-04-28 ~11:00 UTC. EIP-712 domain bumped 1->2; V1 SDK incompatible.
+            # signature_type=2 retained (POLY_GNOSIS_SAFE / browser-wallet proxy;
+            # Codex v1 F1 verified V2 enum mapping unchanged from V1).
+            # retry_on_error=True enables SDK transient-retry on POST 5xx/network errors;
+            # GET retries not covered (Codex v2 F4 — known limitation).
+            # use_server_time NOT set: Codex v1 F3 confirmed it does not affect signed-order
+            # timestamp (which is generated locally), only adds latency to L1/L2 headers.
             self.client = ClobClient(
                 host="https://clob.polymarket.com",
-                key=private_key,
                 chain_id=137,
-                signature_type=2,  # Browser wallet proxy (Phantom)
+                key=private_key,
+                signature_type=2,
                 funder=funder,
+                retry_on_error=True,
             )
-            
-            # Always derive fresh API credentials (stored creds go stale)
-            self.client.set_api_creds(self.client.derive_api_key())
-            logger.info("CLOB client initialized with derived API keys")
-            
+
+            # V2: create_or_derive_api_key replaces V1's derive_api_key
+            self.client.set_api_creds(self.client.create_or_derive_api_key())
+            logger.info("CLOB v2 client initialized with derived API keys")
+
         except ImportError:
-            raise ImportError("Run: pip install py-clob-client python-dotenv")
+            raise ImportError("Run: pip install py-clob-client-v2 python-dotenv")
     
     def get_balance(self) -> float:
         """
@@ -80,12 +87,12 @@ class PolymarketExecutor:
             logger.error(f"Balance check/Connection error: {e}")
             return 0.0
     
-    def place_order(self, token_id: str, side: Literal["BUY", "SELL"], 
+    def place_order(self, token_id: str, side: Literal["BUY", "SELL"],
                     size: float, price: float) -> OrderResult:
         if self.dry_run:
             logger.info(f"[DRY RUN] {side} {size:.2f} @ {price:.2f}")
             return OrderResult(True, "dry_run", size, price)
-        
+
         # Check VPN/connectivity before attempting trade
         try:
             if not self.client:
@@ -95,29 +102,17 @@ class PolymarketExecutor:
                 return OrderResult(False, error=f"Cannot reach Polymarket - check VPN (status: {health_check})")
         except Exception as e:
             return OrderResult(False, error=f"VPN/connectivity check failed: {str(e)}")
-        
-        # CLOB API always uses BUY/SELL - we're always buying tokens (YES or NO tokens)
-        # The token_id determines which outcome we're betting on
+
+        # CLOB API uses BUY/SELL strings (V2 OrderArgsV2.side: str)
         clob_side = "BUY" if side in ["YES", "NO", "BUY"] else "SELL"
 
-        # PD-211 (HOLMES-091): refresh market metadata before signing; retry once on
-        # order_version_mismatch. SDK caches tick_size/neg_risk per ClobClient lifetime;
-        # long-lived dashboard process drift -> exchange rejects signed orders.
-        return self._sign_and_post(token_id, clob_side, size, price, _retry=False)
+        try:
+            from py_clob_client_v2 import OrderArgs, PartialCreateOrderOptions, OrderType
+        except ImportError:
+            logger.error("py_clob_client_v2 not installed - required for V2 exchange")
+            return OrderResult(False, error="py_clob_client_v2 not installed")
 
-    def _sign_and_post(self, token_id: str, clob_side: str, size: float,
-                       price: float, _retry: bool) -> OrderResult:
-        """Sign and post order with freshly-fetched market metadata.
-
-        Evicts the SDK's per-instance tick_size/neg_risk cache for token_id, fetches
-        fresh values from the exchange, embeds them in PartialCreateOrderOptions,
-        signs, posts. On order_version_mismatch from the exchange, retries once.
-        """
-        from py_clob_client.clob_types import OrderArgs, PartialCreateOrderOptions
-
-        # Evict cached metadata so SDK re-fetches from server
-        self._invalidate_market_cache(token_id)
-
+        # Fetch market metadata (V2 still has get_tick_size / get_neg_risk)
         try:
             tick_size = self.client.get_tick_size(token_id)
             neg_risk = self.client.get_neg_risk(token_id)
@@ -125,45 +120,62 @@ class PolymarketExecutor:
             logger.error(f"Order failed (metadata fetch): token_id={token_id} err={e}")
             return OrderResult(False, error=f"metadata fetch failed: {e}")
 
+        # PD-220 v3 (Codex v2 F5): funder + signature_type are stored on client.builder,
+        # not on client. Defensive: try builder first, fall back to client, fall back to env.
+        builder = getattr(self.client, "builder", None)
+        funder_addr = (
+            getattr(builder, "funder", None) if builder else None
+        ) or getattr(self.client, "funder", None) or os.environ.get("POLY_FUNDER_ADDRESS", "?")
+        sig_type = (
+            getattr(builder, "signature_type", None) if builder else None
+        )
+        if sig_type is None:
+            sig_type = getattr(self.client, "signature_type", "?")
+
         logger.info(
-            f"polymarket.sign.pre token_id={token_id} side={clob_side} "
+            f"polymarket.sign.pre v2 token_id={token_id} side={clob_side} "
             f"price={price:.4f} size={size:.4f} tick_size={tick_size} "
-            f"neg_risk={neg_risk} retry={_retry}"
+            f"neg_risk={neg_risk} funder={funder_addr} signature_type={sig_type} "
+            f"sdk=py-clob-client-v2 chain_id=137"
         )
 
-        order = OrderArgs(token_id=token_id, price=price, size=size, side=clob_side)
+        order_args = OrderArgs(
+            token_id=token_id,
+            price=price,
+            size=size,
+            side=clob_side,
+        )
         options = PartialCreateOrderOptions(tick_size=tick_size, neg_risk=neg_risk)
 
+        # PD-220 v3 (Codex v2 F2 + F3): use combined create_and_post_order. The SDK's
+        # internal loop handles BOTH exception path (raised PolyApiException 400) AND
+        # non-exception path (200 with error_message body) via _is_order_version_mismatch
+        # check + force-refresh + retry. Splitting the call (v2 attempt) bypassed that
+        # logic and introduced silent-success + no-refresh bugs.
         try:
-            signed = self.client.create_order(order, options)
-            result = self.client.post_order(signed)
-            return OrderResult(True, result.get("orderID"), size, price)
+            result = self.client.create_and_post_order(
+                order_args=order_args,
+                options=options,
+                order_type=OrderType.GTC,
+            )
         except Exception as e:
-            msg = str(e)
-            if "order_version_mismatch" in msg and not _retry:
-                logger.warning(
-                    f"order_version_mismatch on first attempt; refreshing metadata and retrying once. "
-                    f"token_id={token_id} stale_tick_size={tick_size} stale_neg_risk={neg_risk}"
-                )
-                return self._sign_and_post(token_id, clob_side, size, price, _retry=True)
             logger.error(f"Order failed: {e}")
             return OrderResult(False, error=str(e))
 
-    def _invalidate_market_cache(self, token_id: str) -> None:
-        """Evict cached tick_size and neg_risk for token_id from the SDK client.
+        # Defensive result shape check: SDK's combined call typically returns dict on
+        # success (with orderID) but may return dict with `error` key on certain failures
+        # that did not raise. Treat any dict containing `error` as failure.
+        if isinstance(result, dict) and result.get("error"):
+            err_msg = result.get("error")
+            logger.error(f"Order failed (returned error): token_id={token_id} err={err_msg}")
+            return OrderResult(False, error=f"post returned error: {err_msg}")
 
-        py-clob-client caches per-instance and never invalidates. Long-lived
-        ClobClient instances (e.g., dashboard process lifetime) accumulate stale
-        metadata, which produces order_version_mismatch when signed orders carry
-        stale fields. Cache attributes are name-mangled (__tick_sizes / __neg_risk)
-        and accessed via _ClobClient__tick_sizes / _ClobClient__neg_risk.
-        """
-        if not self.client:
-            return
-        for attr in ("_ClobClient__tick_sizes", "_ClobClient__neg_risk"):
-            cache = getattr(self.client, attr, None)
-            if isinstance(cache, dict):
-                cache.pop(token_id, None)
+        order_id = result.get("orderID") if isinstance(result, dict) else None
+        if not order_id:
+            logger.warning(f"Order placed but no orderID returned: result={result}")
+            return OrderResult(False, error=f"no orderID in result: {result}")
+
+        return OrderResult(True, order_id, size, price)
 
     def buy(self, token_id: str, dollar_amount: float, max_price: float) -> OrderResult:
         shares = dollar_amount / max_price
