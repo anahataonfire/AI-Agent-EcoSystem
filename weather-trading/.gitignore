@@ -21,5 +21,8 @@ reports/
 weather_backtest.db-journal
 weather_backtest.db-wal
 
+# PD-326: edge-harvest opp cache (persisted across uvicorn reloads, but per-machine state)
+backend/.opp-cache.json
+
 # OS
 .DS_Store

@@ -4,7 +4,33 @@ FastAPI backend for the trading dashboard.
 """
 import os
 import sys
+import json
 import threading
+
+# PD-326 (handoff Step 4): persist the edge-harvest opp cache across uvicorn
+# --reload restarts so the /api/trade lookup doesn't 404 during the empty
+# window between reload and the next POST /api/edge-harvest.
+_OPP_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".opp-cache.json")
+
+
+def _save_opp_cache(opps: list, last_scan=None) -> None:
+    try:
+        with open(_OPP_CACHE_PATH, "w") as f:
+            json.dump({"opportunities": opps, "lastScan": last_scan}, f)
+    except OSError as e:
+        # Cache write failure is non-fatal — log and move on.
+        # (FastAPI is configured before logger; deferred print used.)
+        print(f"[opp-cache] save failed: {e}", file=sys.stderr)
+
+
+def _load_opp_cache() -> tuple:
+    """Returns (opportunities, last_scan) or ([], None) on miss."""
+    try:
+        with open(_OPP_CACHE_PATH, "r") as f:
+            data = json.load(f)
+            return data.get("opportunities", []), data.get("lastScan")
+    except (OSError, json.JSONDecodeError):
+        return [], None
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # PD-230 (HOLMES-098): critical-import probe with fail-fast on wrong Python.
@@ -90,8 +116,12 @@ class AppState:
         self.bankroll = 1000.0
         self.positions = load_positions()  # Load from SQLite on startup
         self.opportunities = []
-        self.edge_harvest_opportunities = []
-        self.last_scan = None
+        # PD-326: restore opp cache across uvicorn reloads.
+        cached_opps, cached_scan = _load_opp_cache()
+        self.edge_harvest_opportunities = cached_opps
+        self.last_scan = cached_scan
+        if cached_opps:
+            logger.info(f"Restored {len(cached_opps)} cached edge-harvest opps from disk (lastScan={cached_scan})")
         self.is_live = False
         if MODULES_LOADED:
             self.sizer = PositionSizer(bankroll=self.bankroll)
@@ -261,7 +291,14 @@ async def execute_trade(request: TradeRequest):
     if not opp:
         opp = next((o for o in state.edge_harvest_opportunities if o["id"] == request.opportunity_id), None)
     if not opp:
-        raise HTTPException(404, "Opportunity not found")
+        # PD-326: distinguish "cache empty after restart" from "stale ID" so the
+        # operator knows whether to click Run Scanner or whether the row simply rolled off.
+        if not state.edge_harvest_opportunities and not state.opportunities:
+            raise HTTPException(
+                503,
+                "Opportunity cache empty (backend restart). Click Run Scanner to refresh, then retry the trade."
+            )
+        raise HTTPException(404, "Opportunity not found in current scan (rolled off or stale ID)")
     
     size = request.size
     if size is None:
@@ -543,12 +580,15 @@ def scan_edge_harvest(request: Optional[ScanRequest] = None):
             "hoursRemaining": opp.hours_remaining,
         })
     
-    # Store for trading
+    # Store for trading + persist (PD-326: survive uvicorn reload)
+    scan_time = datetime.now(timezone.utc).isoformat()
     state.edge_harvest_opportunities = results
-    
+    state.last_scan = scan_time
+    _save_opp_cache(results, scan_time)
+
     return {
         "opportunities": results,
-        "scanTime": datetime.now(timezone.utc).isoformat(),
+        "scanTime": scan_time,
         "stats": {
             "total": len(results),
             "conservative": len([r for r in results if r["thresholdType"] == "CONSERVATIVE"]),
