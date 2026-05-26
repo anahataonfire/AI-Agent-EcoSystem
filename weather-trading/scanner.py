@@ -39,7 +39,8 @@ class WeatherMarket:
     end_time: datetime
     market_url: str
     clob_token_ids: tuple = (None, None)  # (yes_token_id, no_token_id)
-    
+    market_type: str = "high"  # "high" or "low" — which daily extreme the market resolves on (PD-321 R3)
+
     @property
     def hours_remaining(self) -> float:
         """Hours until market resolution."""
@@ -156,10 +157,23 @@ class WeatherMarketScanner:
             return None
     
     def _extract_city(self, question: str) -> Optional[str]:
-        """Extract city key from market question."""
+        """
+        Extract city key from market question.
+
+        Uses word-boundary regex match (not substring `in`) — the substring form
+        had a critical collision where the 2-letter alias `"la"` matched inside
+        words like `Manila`, `Kuala Lumpur`, and `Lahore`, mis-routing those
+        markets to los_angeles with Manila's clob_token_ids attached. Operator
+        observed real-money loss 2026-05-21 on Manila NO trades that were
+        labeled LA in the dashboard.
+
+        Word-boundary match requires the alias to be a complete token,
+        not a substring fragment.
+        """
         question_lower = question.lower()
         for alias, city_key in self.CITY_ALIASES.items():
-            if alias in question_lower:
+            # \b respects word boundaries — "la" no longer matches inside "Manila"
+            if re.search(r'\b' + re.escape(alias) + r'\b', question_lower):
                 return city_key
         return None
     
@@ -185,6 +199,19 @@ class WeatherMarketScanner:
             temp = float(above_match.group(1))
             return (temp, float('inf'), unit)
 
+        # Try single-integer pattern "be N°C on …" (PD-321 R2)
+        # Polymarket post-redesign uses bare integers for 1°C C-cities (e.g. "be 22C on May 19?")
+        # and could plausibly emit "be 86F on …" if 1°F single-integers ever appear.
+        # Returns a degenerate bucket (N, N, unit) so calculate_bands_away treats it
+        # as a 1-wide bucket centered at N. PD-321 R4 round 3: capture unit IN the
+        # regex so a bare "22C" without degree sign still routes as °C (the
+        # outer unit-detect requires ° presence).
+        single_match = re.search(r'\bbe\s+(-?\d+)\s*([FC])\s+on\b', question, re.IGNORECASE)
+        if single_match:
+            temp = float(single_match.group(1))
+            matched_unit = single_match.group(2).upper()
+            return (temp, temp, matched_unit)
+
         # Try "between X and Y" pattern
         between_match = re.search(r'between\s+(-?\d+)\s*[FC]?\s+and\s+(-?\d+)\s*[FC]?', question, re.IGNORECASE)
         if between_match:
@@ -207,37 +234,53 @@ class WeatherMarketScanner:
         
         Handles patterns like "on January 15" or "Jan 15th"
         """
+        # Delegate to _try_extract_date; fall back to end_time only when nothing
+        # in the text actually parsed (PD-321 R4 Codex round 3 finding: previous
+        # "equal-to-endDate" fallback could overwrite a correct slug-derived
+        # date with a year-rolled question parse around UTC-midnight same-day).
+        parsed = self._try_extract_date(question)
+        if parsed is not None:
+            return parsed
+        return end_time.strftime("%Y-%m-%d")
+
+    def _try_extract_date(self, text: str) -> Optional[str]:
+        """
+        Parse a date out of free-form text. Returns YYYY-MM-DD or None.
+
+        Accepts slug-form ("may-19-2026") and question-form ("on May 19, 2026"
+        or just "on May 19"). Trailing 4-digit year is honored when present;
+        otherwise year is inferred from now() with a roll-forward heuristic
+        for past-this-year dates.
+        """
         months = {
             'january': 1, 'jan': 1, 'february': 2, 'feb': 2,
             'march': 3, 'mar': 3, 'april': 4, 'apr': 4,
             'may': 5, 'june': 6, 'jun': 6, 'july': 7, 'jul': 7,
             'august': 8, 'aug': 8, 'september': 9, 'sep': 9, 'sept': 9,
             'october': 10, 'oct': 10, 'november': 11, 'nov': 11,
-            'december': 12, 'dec': 12
+            'december': 12, 'dec': 12,
         }
-        
-        # Pattern: "on January 15" or "Jan 15th"
-        date_match = re.search(
-            r"(?:on\s+)?(" + "|".join(months.keys()) + r")\s+(\d{1,2})(?:st|nd|rd|th)?",
-            question.lower()
+        m = re.search(
+            r"(?:on\s+)?(" + "|".join(months.keys()) + r")[-\s]+(\d{1,2})(?:st|nd|rd|th)?"
+            r"(?:[-\s,]+(\d{4}))?",
+            text.lower(),
         )
-        
-        if date_match:
-            month_name = date_match.group(1)
-            day = int(date_match.group(2))
-            month = months[month_name]
-            
-            # Determine year (assume current or next year)
-            now = datetime.now(timezone.utc)
-            year = now.year
-            target = datetime(year, month, day, tzinfo=timezone.utc)
-            if target < now:
-                year += 1
-            
-            return f"{year}-{month:02d}-{day:02d}"
-        
-        # Fall back to end_time date
-        return end_time.strftime("%Y-%m-%d")
+        if not m:
+            return None
+        month_name = m.group(1)
+        day = int(m.group(2))
+        year_str = m.group(3)
+        month = months[month_name]
+
+        if year_str:
+            return f"{int(year_str)}-{month:02d}-{day:02d}"
+
+        now = datetime.now(timezone.utc)
+        year = now.year
+        target = datetime(year, month, day, tzinfo=timezone.utc)
+        if target < now:
+            year += 1
+        return f"{year}-{month:02d}-{day:02d}"
     
     def _generate_event_slugs(self, cities: List[str], days_ahead: int = 2) -> List[str]:
         """
@@ -256,9 +299,12 @@ class WeatherMarketScanner:
                 target = now + timedelta(days=day_offset)
                 month_name = months_lower[target.month]
                 day = target.day
-                slug = f"highest-temperature-in-{slug_city}-on-{month_name}-{day}"
-                slugs.append((city_key, target.strftime("%Y-%m-%d"), slug))
-        
+                # PD-321 R3: emit both highest- and lowest-temperature flavors.
+                # Polymarket's post-redesign product includes both extremes as separate events.
+                for prefix in ("highest-temperature-in", "lowest-temperature-in"):
+                    slug = f"{prefix}-{slug_city}-on-{month_name}-{day}"
+                    slugs.append((city_key, target.strftime("%Y-%m-%d"), slug))
+
         return slugs
     
     def _fetch_event_by_slug(self, slug: str) -> Optional[Dict]:
@@ -276,13 +322,19 @@ class WeatherMarketScanner:
                 return None
         
         def is_current(event: Optional[Dict]) -> bool:
-            """Check if event has ANY market ending in the future."""
+            """Check if event has ANY market still active/tradeable."""
             if not event:
                 return False
             markets = event.get('markets', [])
             if not markets:
                 return False
+            # Use active/acceptingOrders fields — endDate is resolution time, not trading cutoff
             for m in markets:
+                if m.get('active') and not m.get('closed', False):
+                    return True
+                if m.get('acceptingOrders'):
+                    return True
+                # Fallback: endDate check for APIs that don't return active/closed fields
                 end_str = m.get('endDate', '')
                 try:
                     end_time = datetime.fromisoformat(end_str.replace('Z', '+00:00'))
@@ -360,7 +412,12 @@ class WeatherMarketScanner:
                     except ValueError:
                         end_time = now + timedelta(days=1)  # Default
 
-                    if end_time < now:
+                    # Skip only if truly settled — past resolution AND order book closed.
+                    # Polymarket keeps acceptingOrders=True on many markets for hours past
+                    # endDate (operator-observed 2026-05-21: NYC May 21 markets had
+                    # endDate=12:00Z but 7/11 were still acceptingOrders at 13:47Z).
+                    # Earlier "end_time < now: continue" was dropping today's tradeable markets.
+                    if end_time < now and not market.get('acceptingOrders', False):
                         continue
 
                     # Get prices
@@ -389,6 +446,10 @@ class WeatherMarketScanner:
                         end_time=end_time,
                         market_url=f"https://polymarket.com/event/{slug}",
                         clob_token_ids=_parse_clob_token_ids(market),
+                        # market_type derived from the SLUG (canonical source), not
+                        # the question — defends against bucket-only question text
+                        # (PD-321 R4 Codex round 2 finding).
+                        market_type=("low" if "lowest" in slug.lower() else "high"),
                     )
 
                     markets.append(wm)
@@ -398,101 +459,218 @@ class WeatherMarketScanner:
 
         return markets
     
-    def fetch_weather_markets(self, city_filter: List[str] = None) -> List[WeatherMarket]:
+    def fetch_via_daily_temperature_tag(
+        self,
+        city_filter: Optional[List[str]] = None,
+    ) -> List[WeatherMarket]:
+        """
+        Bulk discovery via Polymarket's daily-temperature tag (PD-321 R4).
+
+        Reads the tag feed once instead of probing 50+ individual slugs.
+        Each event encodes city, target date, and high/low type in its
+        slug/title; the market question carries only the bucket. The parser
+        favors event metadata over question text for city/date/type because
+        bucket-only questions are common post-redesign and would otherwise
+        be mis-routed.
+
+        Args:
+            city_filter: Optional whitelist of city_keys. None = accept all
+                rotation cities mappable via _extract_city. Callers from
+                fetch_weather_markets pass ACTIVE_CITIES by default.
+
+        Returns:
+            list of WeatherMarket objects
+        """
+        url = (
+            f"{API_CONFIG['polymarket_gamma_url']}/events"
+            "?tag_slug=daily-temperature"
+            "&order=endDate"
+            "&ascending=false"
+            "&limit=200"
+        )
+        data = self._make_request(url)
+        if not data:
+            logger.warning("daily-temperature tag-feed returned no events")
+            return []
+
+        markets: List[WeatherMarket] = []
+        now = datetime.now(timezone.utc)
+
+        for event in data:
+            event_slug = event.get("slug", "") or ""
+            event_title = event.get("title", "") or ""
+            event_markets = event.get("markets", [])
+            if not event_markets:
+                continue
+
+            # Event-level metadata. Slug example:
+            #   highest-temperature-in-mexico-city-on-may-19-2026
+            #   lowest-temperature-in-nyc-on-may-22-2026
+            # Both city and high/low type live here; market questions can be
+            # bucket-only and lack this info.
+            slug_text = event_slug.replace("-", " ")
+            event_city_key = self._extract_city(slug_text) or self._extract_city(event_title)
+            event_market_type = (
+                "low"
+                if ("lowest" in event_slug.lower() or "lowest" in event_title.lower())
+                else "high"
+            )
+
+            # Keep event if any market is tradeable OR has future resolution.
+            keep_event = False
+            for m in event_markets:
+                if m.get("acceptingOrders"):
+                    keep_event = True
+                    break
+                end_str = m.get("endDate", "")
+                try:
+                    et = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+                    if et > now:
+                        keep_event = True
+                        break
+                except (ValueError, TypeError):
+                    continue
+            if not keep_event:
+                continue
+
+            for market in event_markets:
+                try:
+                    question = market.get("question", "")
+
+                    bucket = self._extract_bucket(question)
+                    if not bucket:
+                        continue
+                    bucket_low, bucket_high, bucket_unit = bucket
+
+                    # City: prefer event-level (slug/title), question fallback.
+                    city_key = event_city_key or self._extract_city(question)
+                    if not city_key:
+                        continue
+                    if city_filter is not None and city_key not in city_filter:
+                        continue
+
+                    end_str = market.get("endDate") or market.get("end_date_iso", "")
+                    try:
+                        end_time = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+                    except (ValueError, TypeError):
+                        end_time = now + timedelta(days=1)
+
+                    # Skip truly-settled markets (post-resolution AND not tradeable).
+                    if end_time < now and not market.get("acceptingOrders", False):
+                        continue
+
+                    # Target date: try slug first (carries explicit YYYY),
+                    # then question, then fall back to endDate. Uses None-
+                    # returning helper so a slug date that happens to equal
+                    # endDate isn't mistaken for parse failure (Codex R3).
+                    target_date = (
+                        self._try_extract_date(slug_text)
+                        or self._try_extract_date(question)
+                        or end_time.strftime("%Y-%m-%d")
+                    )
+
+                    # Market type: event slug/title is the canonical source.
+                    # Question can override only if it explicitly says "lowest".
+                    market_type = event_market_type
+                    if "lowest" in question.lower():
+                        market_type = "low"
+
+                    prices_raw = market.get("outcomePrices", "[0.5]")
+                    try:
+                        prices = json.loads(prices_raw) if isinstance(prices_raw, str) else prices_raw
+                        yes_price = float(prices[0])
+                    except (ValueError, IndexError, TypeError, json.JSONDecodeError):
+                        yes_price = 0.5
+
+                    city_info = WEATHER_CITIES.get(city_key, {})
+
+                    wm = WeatherMarket(
+                        market_id=market.get("id", ""),
+                        question=question,
+                        city=city_info.get("name", city_key),
+                        city_key=city_key,
+                        target_date=target_date,
+                        bucket_low=bucket_low,
+                        bucket_high=bucket_high,
+                        bucket_unit=bucket_unit,
+                        yes_price=yes_price,
+                        no_price=1.0 - yes_price,
+                        liquidity=float(market.get("liquidity", 0)),
+                        volume_24h=float(market.get("volume24hr", 0)),
+                        end_time=end_time,
+                        market_url=f"https://polymarket.com/event/{event_slug}",
+                        clob_token_ids=_parse_clob_token_ids(market),
+                        market_type=market_type,
+                    )
+                    markets.append(wm)
+                except (ValueError, KeyError, TypeError) as e:
+                    logger.debug(f"Failed to parse market in tag-feed: {e}")
+                    continue
+
+        n_cities = len(set(m.city_key for m in markets))
+        logger.info(
+            f"daily-temperature tag-feed: {len(markets)} markets across {n_cities} cities"
+        )
+        return markets
+
+    def fetch_weather_markets(self, city_filter: Optional[List[str]] = None) -> List[WeatherMarket]:
         """
         Fetch all active weather temperature markets from Polymarket.
-        
-        Tries multiple methods:
-        1. Standard API tag-based search
-        2. Direct slug-based fetching (fallback)
-        
+
+        Discovery cascade (PD-321 R4):
+          1. Bulk tag-feed via daily-temperature (Method A — preferred).
+          2. Slug-by-slug × ACTIVE_CITIES supplement (Method B — always
+             merged as defense-in-depth against tag omissions, parser
+             misses, or one side of high/low rotation being absent).
+
+        Markets are deduped by market_id; tag-feed entries win on collision.
+
+        Note: city_filter currently defaults to ACTIVE_CITIES; rotation
+        expansion (passing None to ingest cities outside ACTIVE_CITIES)
+        requires CITY_ALIASES + WEATHER_CITIES + forecaster entries for the
+        new cities. See PD-321 G5 follow-up.
+
         Args:
-            city_filter: Only return markets for these cities (default: ACTIVE_CITIES)
-            
+            city_filter: Optional whitelist of city_keys. Defaults to ACTIVE_CITIES.
+
         Returns:
-            List of WeatherMarket objects
+            list of WeatherMarket objects.
         """
         if city_filter is None:
             city_filter = ACTIVE_CITIES
-        
-        markets = []
-        now = datetime.now(timezone.utc)
-        
-        # Method 1: Try standard API with weather tag
-        url = f"{API_CONFIG['polymarket_gamma_url']}/events?tag=weather&closed=false&limit=100"
-        data = self._make_request(url)
-        
-        if data:
-            for event in data:
-                event_slug = event.get("slug", "")
-                event_markets = event.get("markets", [])
-                
-                for market in event_markets:
-                    try:
-                        question = market.get("question", "")
-                        
-                        # Only process temperature markets
-                        if not any(word in question.lower() for word in ['temperature', '°f', '°c', 'degrees']):
-                            continue
-                        
-                        city_key = self._extract_city(question)
-                        if not city_key or city_key not in city_filter:
-                            continue
-                        
-                        bucket = self._extract_bucket(question)
-                        if not bucket:
-                            continue
-                        
-                        bucket_low, bucket_high, bucket_unit = bucket
-                        
-                        end_str = market.get("endDate") or market.get("end_date_iso", "")
-                        try:
-                            end_time = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
-                        except ValueError:
-                            continue
-                        
-                        if end_time < now:
-                            continue
-                        
-                        target_date = self._extract_date(question, end_time)
-                        yes_price = float(market.get("outcomePrices", "[0.5]").strip("[]").split(",")[0])
-                        
-                        city_info = WEATHER_CITIES.get(city_key, {})
-                        
-                        wm = WeatherMarket(
-                            market_id=market.get("id", ""),
-                            question=question,
-                            city=city_info.get("name", city_key),
-                            city_key=city_key,
-                            target_date=target_date,
-                            bucket_low=bucket_low,
-                            bucket_high=bucket_high,
-                            bucket_unit=bucket_unit,
-                            yes_price=yes_price,
-                            no_price=1 - yes_price,
-                            liquidity=float(market.get("liquidity", 0)),
-                            volume_24h=float(market.get("volume24hr", 0)),
-                            end_time=end_time,
-                            market_url=f"https://polymarket.com/event/{event_slug}",
-                            clob_token_ids=_parse_clob_token_ids(market),
-                        )
-                        
-                        markets.append(wm)
-                        
-                    except (ValueError, KeyError, TypeError):
-                        continue
-        
-        # Method 2: Slug-based fetching (fast, reliable, always runs)
-        logger.info("Running slug-based discovery...")
+
+        markets: List[WeatherMarket] = []
+
+        # Method A: bulk daily-temperature tag-feed.
+        tag_markets = self.fetch_via_daily_temperature_tag(city_filter=city_filter)
+        markets.extend(tag_markets)
+        seen_ids = {m.market_id for m in markets if m.market_id}
+
+        # Method B: slug-by-slug supplement. Always run; merge by market_id.
+        # Codex PD-321 R4 round 1: dropping this when tag-feed yields anything
+        # loses defense-in-depth against tag omissions / parser misses /
+        # one-side-of-rotation gaps. Keep the run, dedup by market_id.
+        # The 114 parallel slug probes preserve pre-R4 API load; targeted
+        # supplementation (only missing triples) is a follow-up optimization.
+        logger.info("Running slug-based discovery as supplement...")
         slug_markets = self.fetch_temperature_markets_by_slug(city_filter)
-        if slug_markets:
-            existing_ids = {m.market_id for m in markets}
-            new_markets = [m for m in slug_markets if m.market_id not in existing_ids]
-            if new_markets:
-                logger.info(f"Slug-based discovery added {len(new_markets)} additional markets")
-            markets.extend(new_markets)
-        
-        logger.info(f"Found {len(markets)} weather markets for cities: {city_filter}")
+        added = 0
+        for m in slug_markets:
+            if m.market_id and m.market_id in seen_ids:
+                continue
+            markets.append(m)
+            if m.market_id:
+                seen_ids.add(m.market_id)
+            added += 1
+        if added:
+            logger.info(f"Slug discovery added {added} markets not in tag-feed")
+
+        cities_found = sorted({m.city_key for m in markets})
+        logger.info(
+            f"Found {len(markets)} weather markets "
+            f"({len(tag_markets)} tag + {added} slug-only) "
+            f"across {len(cities_found)} cities"
+        )
         return markets
     
     def fetch_markets_from_browser(self, city_filter: List[str] = None) -> List[WeatherMarket]:

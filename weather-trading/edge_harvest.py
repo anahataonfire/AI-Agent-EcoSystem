@@ -105,6 +105,9 @@ class EdgeHarvestOpportunity:
     # PD-195: "NO" (buy NO far from forecast) or "YES" (buy YES inside forecast band)
     recommended_side: str = "NO"
 
+    # PD-321 R3: "high" or "low" — which daily extreme this market resolves on
+    market_type: str = "high"
+
     @property
     def bucket(self) -> str:
         """Alias for bucket_str (backwards compatibility with auto_harvest)."""
@@ -119,8 +122,14 @@ class EdgeHarvestScanner:
     """
 
     # Thresholds
-    AGGRESSIVE_BANDS = 2  # 2 bucket-widths away - higher ROI, more risk
-    CONSERVATIVE_BANDS = 3  # 3 bucket-widths away - lower ROI, safer
+    # Distance thresholds in BANDS (each band = 1 bucket width).
+    # Polymarket resolves the daily high to integer °F; an F-bucket
+    # labeled "86-87°F" covers integer outcomes {86, 87} = 2 outcomes wide.
+    # C-buckets are single-integer ("be 22°C") = 1 outcome wide.
+    # Original PD-321 R1 mistakenly set BUCKET_WIDTH_F = 1.0; reverted
+    # 2026-05-21 after operator caught the doubled band counts.
+    AGGRESSIVE_BANDS = 2  # 2 bucket-widths away (=4°F F-markets, =2°C C-markets)
+    CONSERVATIVE_BANDS = 3  # 3 bucket-widths away (=6°F F-markets, =3°C C-markets)
 
     # Risk thresholds (in °F; converted for °C markets)
     HIGH_MODEL_SPREAD = 6.0  # °F - indicates uncertainty
@@ -133,9 +142,10 @@ class EdgeHarvestScanner:
     SAFE_NO_PRICE = 0.90   # 90¢+ NO = genuinely conservative (≤10% YES probability)
     SAFE_YES_PRICE = 0.90  # 90¢+ YES = near-certain hit (PD-195 YES-side mirror)
 
-    # Bucket widths by unit (Polymarket standard widths)
-    BUCKET_WIDTH_F = 2.0  # °F markets (US cities)
-    BUCKET_WIDTH_C = 1.0  # °C markets (international cities)
+    # Bucket widths by unit. Polymarket resolves daily extreme to integer degrees;
+    # bucket coverage in outcome space determines band size.
+    BUCKET_WIDTH_F = 2.0  # F-bucket "86-87°F" covers integers {86, 87} → 2 outcomes
+    BUCKET_WIDTH_C = 1.0  # C-bucket "22°C" covers integer {22} → 1 outcome
     
     def __init__(self):
         pass
@@ -298,6 +308,8 @@ class EdgeHarvestScanner:
             distance_label = "boundary"
         else:
             distance_label = "forecast"
+        # Reverted 2026-05-21 to original cutoffs alongside BUCKET_WIDTH_F=2.0.
+        # ≤2 bands = ≤4°F (F) / ≤2°C (C) close; ≤3 bands = ≤6°F / ≤3°C moderate.
         if bands_away <= 2:
             score += 4
             factors.append(f"Close to {distance_label} ({bands_away} bands / {degrees_away:.1f} away)")
@@ -411,7 +423,15 @@ class EdgeHarvestScanner:
 
             # Shared computation (PD-195: hoisted so YES branch can reuse)
             unit = getattr(market, 'bucket_unit', 'F')
-            forecast_temp = forecast.high_c if unit == "C" else forecast.high_f
+            # PD-321 R3: route highest-temp markets to forecast.high, lowest-temp to forecast.low.
+            mtype = getattr(market, 'market_type', 'high')
+            if mtype == 'low':
+                forecast_temp = forecast.low_c if unit == "C" else forecast.low_f
+            else:
+                forecast_temp = forecast.high_c if unit == "C" else forecast.high_f
+            if forecast_temp is None:
+                # Forecast lacks the requested extreme (e.g. some sources omit lows). Skip.
+                continue
 
             bands_away, degrees_away = self.calculate_bands_away(
                 forecast_temp,
@@ -490,6 +510,7 @@ class EdgeHarvestScanner:
                     liquidity=getattr(market, 'liquidity', 0),
                     hours_remaining=getattr(market, 'hours_remaining', 0),
                     recommended_side="NO",
+                    market_type=mtype,
                 )
                 no_token_id = market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None
                 if no_token_id:
@@ -562,6 +583,7 @@ class EdgeHarvestScanner:
                             liquidity=getattr(market, 'liquidity', 0),
                             hours_remaining=getattr(market, 'hours_remaining', 0),
                             recommended_side="YES",
+                            market_type=mtype,
                         )
                         yes_token_id = market.clob_token_ids[0] if len(market.clob_token_ids) > 0 else None
                         if yes_token_id:

@@ -1,8 +1,13 @@
 """
-Weather Trading Backtester
+Weather Trading Backtester  [LEGACY — YES-side simulation only]
 
-Validates the probability-based trading strategy by simulating trades
-on historical weather data and calculating hypothetical P&L.
+Simulates trades against SYNTHETIC market prices (gauss-offset forecast with a
+hardcoded "tails are underpriced" prior) resolved against real actual_temps.
+Produces the 40%/25%/15% YES-side win-rate figures in EDGE_CONFIG.
+
+NOT a real-market backtest. For real per-side win-rate tables against live
+Polymarket price_history + actual_temps + Open-Meteo historical forecasts,
+see PD-193 (scripts/backtest_real_markets.py).
 """
 
 import json

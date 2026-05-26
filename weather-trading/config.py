@@ -192,17 +192,23 @@ ACTIVE_CITIES = [
     "seoul", "tokyo", "berlin", "sydney", "mexico_city",
 ]
 
-# Edge calculation settings - VALIDATED VIA BACKTEST (1,212 trades)
-# 
-# Backtest Results (Jan 2026):
+# Edge calculation settings
+#
+# YES-side thresholds (backtester.py simulation, 1,212 trades, Jan 2026):
 #   40%+ edge:  80% win rate (410 trades) ← PRIMARY THRESHOLD
 #   25-40% edge: 29% win rate (504 trades) ← SECONDARY/ALERT ONLY
 #   15-25% edge:  2% win rate (298 trades) ← DO NOT TRADE
+# Caveat: backtester uses synthetic market prices (gauss-offset forecast + baked-in
+# tail-underpricing prior) with real actual_temps for resolution. Not a real-market backtest.
+#
+# NO-side thresholds: UNVALIDATED. PD-193 (Open-Meteo historical backtest against real
+# poly_data_prices) will produce per-side win-rate tables. Until then, short-side signals
+# surface on the dashboard but do NOT auto-execute (see EXECUTION_CONFIG below).
 #
 EDGE_CONFIG = {
-    "min_edge_trade": 0.40,      # Minimum edge to execute trade (80% win rate)
-    "min_edge_alert": 0.25,      # Minimum edge to generate alert (29% win rate - monitor only)
-    "min_edge_scan": 0.15,       # Minimum edge to log/track (data collection)
+    "min_edge_trade": 0.40,      # Minimum |edge| to execute trade (YES: 80% win rate; NO: unvalidated)
+    "min_edge_alert": 0.25,      # Minimum |edge| to generate alert
+    "min_edge_scan": 0.15,       # Minimum |edge| to log/track (data collection)
     "std_dev_default": 2.5,      # Forecast uncertainty in °F
     "confidence_weight": True,   # Weight edge by forecast confidence
 }
@@ -228,6 +234,15 @@ POSITION_CONFIG = {
     "default_position_usd": 10,  # Default suggestion
     "high_edge_position_usd": 20,  # When edge > 25%
     "max_position_usd": 50,  # Never suggest more than this
+}
+
+# Execution gating (PD-191, revised 2026-04-22)
+# Short-side (BUY NO) dashboard-clicked trades are ENABLED after PD-193 backtest
+# passed (156 trades, 78.8% win rate at |edge| ≥ 40%, +58.8pts over breakeven).
+# Manual-execution only: scheduled auto-traders have been unloaded from launchd.
+# Operator will re-engage auto-execution on observed live performance, not backtest.
+EXECUTION_CONFIG = {
+    "short_side_execution_enabled": True,
 }
 
 # API endpoints
@@ -283,7 +298,7 @@ class WeatherOpportunity:
     bucket_probability: float
     edge: float
     recommended_side: str
-    suggested_action: str  # "BUY YES" or "SKIP"
+    suggested_action: str  # "BUY YES" or "BUY NO" or "SKIP"
     suggested_position: float
     
     # Optional fields with defaults (must come last)
@@ -292,9 +307,14 @@ class WeatherOpportunity:
     
     def to_alert_message(self) -> str:
         """Format as Telegram alert message."""
-        emoji = "🌡️" if self.edge >= 0.25 else "📊"
+        emoji = "🌡️" if abs(self.edge) >= 0.25 else "📊"
         consensus = "✅ Consensus" if self.model_consensus else "⚠️ Models differ"
-        
+
+        if self.recommended_side == "NO":
+            price_line = f"💰 NO Price: {self.no_price*100:.1f}¢ (YES: {self.yes_price*100:.1f}¢)"
+        else:
+            price_line = f"💰 YES Price: {self.yes_price*100:.1f}¢ (NO: {self.no_price*100:.1f}¢)"
+
         return f"""{emoji} {self.city_name.upper()} WEATHER OPPORTUNITY
 
 📍 Market: High temp {self.bucket_low}-{self.bucket_high}°{self.bucket_unit}
@@ -302,8 +322,8 @@ class WeatherOpportunity:
 🔮 Forecast: {self.forecast_temp:.0f}°{self.forecast_unit} ({self.forecast_source})
 {consensus}
 
-💰 Market Price: {self.yes_price*100:.1f}¢
-📈 Your Edge: {self.edge*100:.0f}%
+{price_line}
+📈 Your Edge: {self.edge*100:+.0f}%
 🎯 Bucket Prob: {self.bucket_probability*100:.0f}%
 
 💵 Suggested: {self.suggested_action} ${self.suggested_position:.0f}

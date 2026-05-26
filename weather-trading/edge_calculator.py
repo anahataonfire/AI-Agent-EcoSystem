@@ -134,6 +134,14 @@ class EdgeCalculator:
         Returns:
             WeatherOpportunity if edge >= min_edge, else None
         """
+        # PD-321 R4 (Codex R4): low-temperature markets flow through
+        # EdgeHarvestScanner (/api/edge-harvest) only. The legacy
+        # /api/scan + alert path doesn't yet expose market_type on
+        # WeatherOpportunity, so low markets would render as "High temp"
+        # in alerts and use high-only categorization. Skip them here
+        # until the legacy path is made low-aware.
+        if getattr(market, 'market_type', 'high') == 'low':
+            return None
         # Normalize units (both to bucket's unit)
         forecast_temp, bucket_low, bucket_high = self._normalize_units(
             forecast.high_f,  # Use high temp forecast
@@ -163,30 +171,34 @@ class EdgeCalculator:
             f"Forecast: {forecast_temp} {market.bucket_unit} | Std: {std_dev:.2f} | Prob: {prob:.4f}"
         )
         
-        # Calculate edge
+        # Signed edge: + = YES underpriced (buy YES), − = YES overpriced (buy NO)
         edge = prob - market.yes_price
-        
-        # Check if we have sufficient edge
-        if edge < self.min_edge:
+
+        if abs(edge) < self.min_edge:
             logger.debug(
                 f"Skipping {market.city} {bucket_low}-{bucket_high}: "
-                f"edge={edge:.1%} < min={self.min_edge:.1%}"
+                f"|edge|={abs(edge):.1%} < min={self.min_edge:.1%}"
             )
             return None
-        
-        # Determine position sizing
-        if edge >= self.high_edge:
+
+        if edge > 0:
+            recommended_side = "YES"
+            suggested_action = "BUY YES"
+        else:
+            recommended_side = "NO"
+            suggested_action = "BUY NO"
+
+        if abs(edge) >= self.high_edge:
             suggested_position = POSITION_CONFIG["high_edge_position_usd"]
         else:
             suggested_position = POSITION_CONFIG["default_position_usd"]
-        
+
         suggested_position = min(suggested_position, POSITION_CONFIG["max_position_usd"])
-        
-        # Determine if models agree
+
         model_consensus = True
         if forecast.ecmwf_high and forecast.gfs_high:
             model_consensus = abs(forecast.ecmwf_high - forecast.gfs_high) <= 3
-        
+
         opportunity = WeatherOpportunity(
             city=market.city_key,
             city_name=market.city,
@@ -209,18 +221,18 @@ class EdgeCalculator:
             liquidity=market.liquidity,
             bucket_probability=prob,
             edge=edge,
-            recommended_side="YES",
+            recommended_side=recommended_side,
             clob_token_ids=market.clob_token_ids,
-            suggested_action="BUY YES",
+            suggested_action=suggested_action,
             suggested_position=suggested_position,
         )
-        
+
         logger.info(
             f"Found opportunity: {market.city} {bucket_low}-{bucket_high}°{market.bucket_unit} "
-            f"| Forecast: {forecast_temp:.0f}° | Price: {market.yes_price:.2f} "
-            f"| Prob: {prob:.0%} | Edge: {edge:.0%}"
+            f"| Forecast: {forecast_temp:.0f}° | YES: {market.yes_price:.2f} NO: {market.no_price:.2f} "
+            f"| Prob: {prob:.0%} | Edge: {edge:+.0%} | {suggested_action}"
         )
-        
+
         return opportunity
     
     def find_opportunities(
@@ -258,10 +270,10 @@ class EdgeCalculator:
             if opp:
                 opportunities.append(opp)
         
-        # Sort by edge descending
-        opportunities.sort(key=lambda x: x.edge, reverse=True)
-        
-        logger.info(f"Found {len(opportunities)} opportunities with edge >= {self.min_edge:.0%}")
+        # Rank by magnitude of mispricing so large short-side signals surface alongside long
+        opportunities.sort(key=lambda x: abs(x.edge), reverse=True)
+
+        logger.info(f"Found {len(opportunities)} opportunities with |edge| >= {self.min_edge:.0%}")
         return opportunities
 
 

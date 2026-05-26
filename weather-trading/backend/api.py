@@ -7,6 +7,39 @@ import sys
 import threading
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# PD-230 (HOLMES-098): critical-import probe with fail-fast on wrong Python.
+#
+# Backend uses py_clob_client_v2 inside method bodies (executor._init_client,
+# edge_harvest._get_ro_client), so module-load won't catch the missing dep.
+# This probe fires at api.py import time, before uvicorn binds port 8000.
+#
+# Most common trigger: operator launches via PATH-resolved `uvicorn` (homebrew
+# Python 3.14, no v2 SDK) instead of `.venv/bin/python -m uvicorn`. Without
+# this probe the dashboard silently serves all-zero scanner data; with this
+# probe uvicorn refuses to start with an actionable error message.
+try:
+    import py_clob_client_v2 as _v2  # noqa: F401
+except ImportError:
+    _msg = (
+        "\n=========================================================================\n"
+        "FATAL: py_clob_client_v2 is not importable in this Python interpreter.\n"
+        f"  Running Python: {sys.executable}\n"
+        "  Required package: py-clob-client-v2 (>=1.0.0)\n"
+        "\n"
+        "  Most likely cause: uvicorn was launched via PATH-resolved binary using\n"
+        "  the wrong Python. Use the project's venv-bound launcher instead.\n"
+        "\n"
+        "  Fix:\n"
+        "    cd ~/Documents/Projects/Ecosystem/weather-trading && ./run-dev.sh\n"
+        "\n"
+        "  Or directly:\n"
+        "    cd ~/Documents/Projects/Ecosystem/weather-trading/backend && \\\n"
+        "    ../.venv/bin/python -m uvicorn api:app --reload --port 8000\n"
+        "=========================================================================\n"
+    )
+    print(_msg, file=sys.stderr)
+    raise SystemExit(1)
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -21,7 +54,7 @@ app = FastAPI(title="Weather Trading API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://192.168.4.35:3000"],
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}):3000$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -29,7 +62,7 @@ app.add_middleware(
 
 # Import trading modules
 try:
-    from config import ACTIVE_CITIES, EDGE_CONFIG
+    from config import ACTIVE_CITIES, EDGE_CONFIG, EXECUTION_CONFIG
     from scanner import get_scanner
     from forecaster import get_forecaster
     from edge_calculator import get_edge_calculator
@@ -205,7 +238,7 @@ def scan_opportunities(request: Optional[ScanRequest] = None):
             "marketUrl": getattr(opp, 'market_url', ''),
         })
     
-    results.sort(key=lambda x: x["edge"], reverse=True)
+    results.sort(key=lambda x: abs(x["edge"]), reverse=True)
     
     state.opportunities = results
     state.last_scan = datetime.now(timezone.utc).isoformat()
@@ -245,27 +278,47 @@ async def execute_trade(request: TradeRequest):
     if size > state.bankroll - deployed:
         raise HTTPException(400, f"Insufficient funds. Available: ${state.bankroll - deployed:.2f}")
     
-    # Safety gate for edge harvest trades (PD-147)
+    # Safety gate for edge harvest trades (PD-147 NO-side; PD-195 YES-side mirror)
     if opp.get("thresholdType"):
-        no_price = opp.get("bestAskPrice") or opp.get("noPrice", 0)
-        if no_price < 0.60:
-            raise HTTPException(400, f"Safety floor: NO price ${no_price:.2f} too low (min $0.60)")
+        side_for_floor = opp.get("recommendedSide") or "NO"
+        if side_for_floor == "YES":
+            yes_price_chk = opp.get("yesPrice", 0)
+            if yes_price_chk < 0.60:
+                raise HTTPException(400, f"Safety floor: YES price ${yes_price_chk:.2f} too low (min $0.60)")
+        else:
+            no_price_chk = opp.get("bestAskPrice") or opp.get("noPrice", 0)
+            if no_price_chk < 0.60:
+                raise HTTPException(400, f"Safety floor: NO price ${no_price_chk:.2f} too low (min $0.60)")
         risk = opp.get("riskScore", 0)
         if risk >= 8:
             raise HTTPException(400, f"Safety gate: risk score {risk}/10 exceeds limit")
 
-    # Determine side for edge harvest (always NO)
-    side = request.side
-    if side == "NO" or opp.get("thresholdType"):
-        # Edge harvest trade - buy NO
-        token_ids = opp.get("clobTokenIds", (None, None))
-        token_id = token_ids[1] if token_ids and len(token_ids) > 1 else None
-        # Use best ask price for immediate fills, fall back to NO price
-        price = opp.get("bestAskPrice") or opp.get("noPrice", 0.95)
+    # PD-191: short-side scan opportunities are display-only until PD-193 backtest validates
+    if (
+        not opp.get("thresholdType")
+        and request.side == "NO"
+        and not EXECUTION_CONFIG.get("short_side_execution_enabled", False)
+    ):
+        raise HTTPException(
+            400,
+            "Short-side (BUY NO) execution disabled pending PD-193 backtest. "
+            "Flip EXECUTION_CONFIG.short_side_execution_enabled in config.py once validated."
+        )
+
+    # Determine side — respect edge-harvest recommendedSide (PD-195: can be YES or NO)
+    if opp.get("thresholdType"):
+        side = opp.get("recommendedSide") or "NO"
     else:
-        token_ids = opp.get("clobTokenIds", (None, None))
-        token_id = token_ids[0] if side == "YES" else token_ids[1]
-        price = opp.get("yesPrice") if side == "YES" else opp.get("noPrice")
+        side = request.side
+
+    token_ids = opp.get("clobTokenIds", (None, None))
+    if side == "YES":
+        token_id = token_ids[0] if token_ids else None
+        # For edge-harvest YES, prefer best_ask (immediate fill); fall back to yesPrice
+        price = (opp.get("bestAskPrice") if opp.get("thresholdType") else None) or opp.get("yesPrice")
+    else:  # NO
+        token_id = token_ids[1] if token_ids and len(token_ids) > 1 else None
+        price = (opp.get("bestAskPrice") if opp.get("thresholdType") else None) or opp.get("noPrice")
     
     if not token_id:
         raise HTTPException(400, "No token ID available for this market")
@@ -429,8 +482,28 @@ def scan_edge_harvest(request: Optional[ScanRequest] = None):
     
     results = []
     for opp in opportunities:
-        # Generate ID from fields
-        opp_id = f"eh_{opp.city}_{opp.target_date}_{opp.bucket_str}".replace(" ", "").replace("°", "").replace("≤", "lte").replace("≥", "gte").replace("-", "_")
+        # Generate ID from fields.
+        # market_type ("high"/"low") AND recommended_side ("NO"/"YES") are both
+        # required to make the ID unique:
+        #   - market_type: Polymarket runs BOTH "highest-temperature-in-X" and
+        #     "lowest-temperature-in-X" events on the same city/date. They share
+        #     bucket labels (e.g. Miami May 24 90-91°F exists in both events as
+        #     distinct markets with different clob_token_ids). Without
+        #     market_type in the key, dedup collapses two real markets into one
+        #     row — same routing-collision class as PD-322 (Manila/LA alias bug).
+        #   - recommended_side: find_opportunities can emit NO and YES rows for
+        #     the same market (single-integer C-buckets where forecast sits
+        #     exactly inside the bucket).
+        mtype_suffix = (getattr(opp, 'market_type', 'high') or 'high').lower()
+        side_suffix = (getattr(opp, 'recommended_side', 'NO') or 'NO').lower()
+        opp_id = (
+            f"eh_{opp.city}_{opp.target_date}_{opp.bucket_str}_{mtype_suffix}_{side_suffix}"
+            .replace(" ", "")
+            .replace("°", "")
+            .replace("≤", "lte")
+            .replace("≥", "gte")
+            .replace("-", "_")
+        )
         
         results.append({
             "id": opp_id,
@@ -457,6 +530,8 @@ def scan_edge_harvest(request: Optional[ScanRequest] = None):
             "frontWarning": bool(opp.front_warning),
             "frontWarningSeverity": opp.front_warning.severity if opp.front_warning else None,
             "frontWarningReason": opp.front_warning_reason,
+            "recommendedSide": opp.recommended_side,
+            "marketType": getattr(opp, 'market_type', 'high'),
             "clobTokenIds": opp.clob_token_ids,
             "marketUrl": opp.market_url,
             "liquidity": opp.liquidity,

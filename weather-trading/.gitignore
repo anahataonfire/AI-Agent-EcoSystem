@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Caches and generated dirs
+.cache/
+.next/
+node_modules/
+logs/
+reports/
+
+# Codex / sparky review artifacts
+.pd*.diff
+.pd*-r*-proposed.diff
+
+# Local-only state (committed only on operator request)
+weather_backtest.db-journal
+weather_backtest.db-wal
+
+# OS
+.DS_Store
