@@ -41,11 +41,17 @@ class DailyForecast:
     confidence: float  # 0-1, based on model consensus
     fetched_at: datetime
     forecast_range: str = "48hr"  # "48hr" for short-range, "7day" for extended
-    
+
     # Optional: per-model breakdown
     ecmwf_high: Optional[float] = None
     gfs_high: Optional[float] = None
     nws_high: Optional[float] = None
+
+    # PD-325 follow-up: track provenance of the low value so LOW-market
+    # consumers can skip opps generated from the synthetic fallback
+    # (avg_high - 15), which is wildly off for many climates and was the
+    # root cause of pos_707's bad LOW opp.
+    low_source: str = "OPEN_METEO"  # "OPEN_METEO" or "SYNTHETIC"
 
 
 class WeatherForecaster:
@@ -369,9 +375,15 @@ class WeatherForecaster:
         except ValueError:
             forecast_range = "7day"  # Default to conservative
         
-        # Use actual low if we have it from Open-Meteo daily
-        low_f = lows.get("OPEN_METEO", avg_high - 15)
-        
+        # Use actual low if we have it from Open-Meteo daily; otherwise fall
+        # back to avg_high - 15 (crude; flag as SYNTHETIC so LOW consumers can opt out).
+        if "OPEN_METEO" in lows:
+            low_f = lows["OPEN_METEO"]
+            low_source = "OPEN_METEO"
+        else:
+            low_f = avg_high - 15
+            low_source = "SYNTHETIC"
+
         result = DailyForecast(
             city=city_key,
             date=target_date,
@@ -386,6 +398,7 @@ class WeatherForecaster:
             ecmwf_high=highs.get("ecmwf_ifs04") or highs.get("ECMWF_IFS04"),
             gfs_high=highs.get("gfs_seamless") or highs.get("GFS_SEAMLESS") or highs.get("OPEN_METEO"),
             nws_high=highs.get("NWS"),
+            low_source=low_source,
         )
         
         logger.info(

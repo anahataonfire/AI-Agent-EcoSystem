@@ -426,6 +426,12 @@ class EdgeHarvestScanner:
             # PD-321 R3: route highest-temp markets to forecast.high, lowest-temp to forecast.low.
             mtype = getattr(market, 'market_type', 'high')
             if mtype == 'low':
+                # PD-325 follow-up: refuse LOW opps when low_f is the synthetic
+                # `avg_high - 15` fallback. Synthetic lows are wildly off for many
+                # climates and produced confidently-wrong NO recommendations
+                # (pos_707 lost ~$4 on London May 26 17°C LOW with synthetic-low forecast).
+                if getattr(forecast, 'low_source', 'OPEN_METEO') == 'SYNTHETIC':
+                    continue
                 forecast_temp = forecast.low_c if unit == "C" else forecast.low_f
             else:
                 forecast_temp = forecast.high_c if unit == "C" else forecast.high_f
