@@ -155,6 +155,13 @@ const EdgeHarvestRow = ({ opp, onTrade, trading }: { opp: any, onTrade: (opp: an
         <div className="flex flex-col">
           <span className="font-semibold text-zinc-100 uppercase text-sm">{opp.city}</span>
           <span className="text-zinc-500 text-xs">{opp.targetDate}</span>
+          <span className={`text-[10px] font-bold mt-1 px-1.5 py-0.5 rounded w-fit border ${
+            opp.marketType === 'low'
+              ? 'bg-sky-500/15 text-sky-300 border-sky-500/40'
+              : 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+          }`}>
+            {opp.marketType === 'low' ? 'LOW TEMP' : 'HIGH TEMP'}
+          </span>
           {opp.frontWarning && (
             <span className="text-rose-400 text-xs mt-1 flex items-center">
               <ShieldAlert size={12} className="mr-1" />
@@ -163,10 +170,17 @@ const EdgeHarvestRow = ({ opp, onTrade, trading }: { opp: any, onTrade: (opp: an
           )}
         </div>
       </td>
-      <td className="px-3 py-4 text-sm font-medium text-zinc-200">{opp.bucket}</td>
+      <td className="px-3 py-4 text-sm font-medium text-zinc-200">
+        <div className="flex flex-col">
+          <span>{opp.bucket}</span>
+          <span className="text-[10px] text-zinc-500 mt-0.5">
+            {opp.marketType === 'low' ? 'lowest temp' : 'highest temp'}
+          </span>
+        </div>
+      </td>
       <td className="px-3 py-4">
         <div className="flex flex-col">
-          <span className="text-sm text-zinc-200">{(opp.forecastTemp ?? 0).toFixed(0)}°F</span>
+          <span className="text-sm text-zinc-200">{(opp.forecastTemp ?? 0).toFixed(0)}°{opp.bucket?.includes('°C') ? 'C' : 'F'}</span>
           {(opp.modelSpread ?? 0) > 0 && (
             <span className="text-xs text-zinc-500">±{(opp.modelSpread ?? 0).toFixed(1)}° spread</span>
           )}
@@ -174,9 +188,9 @@ const EdgeHarvestRow = ({ opp, onTrade, trading }: { opp: any, onTrade: (opp: an
       </td>
       <td className="px-3 py-4">
         <span className="text-sm text-zinc-300">{opp.bandsAway ?? 0} bands</span>
-        <span className="text-xs text-zinc-500 ml-1">({(opp.degreesAway ?? 0).toFixed(0)}°F)</span>
+        <span className="text-xs text-zinc-500 ml-1">({(opp.degreesAway ?? 0).toFixed(0)}°{opp.bucket?.includes('°C') ? 'C' : 'F'})</span>
       </td>
-      <td className="px-4 py-3 text-sm text-gray-300">${(opp.bestAskPrice ?? opp.noPrice ?? 0).toFixed(2)}</td>
+      <td className="px-4 py-3 text-sm text-gray-300">${((opp.recommendedSide === 'YES' ? opp.yesPrice : (opp.bestAskPrice ?? opp.noPrice)) ?? 0).toFixed(2)}</td>
       <td className="px-4 py-3 text-sm text-gray-400">${dollarLiquidity.toFixed(0)}</td>
       <td className="px-3 py-4">
         <span className="text-sm font-semibold text-emerald-400">{(opp.potentialReturnPct ?? 0).toFixed(1)}%</span>
@@ -214,7 +228,7 @@ const EdgeHarvestRow = ({ opp, onTrade, trading }: { opp: any, onTrade: (opp: an
             disabled={trading}
             className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-700 rounded-lg text-xs font-medium transition-colors flex items-center"
           >
-            {trading ? <RefreshCcw size={12} className="animate-spin" /> : 'Buy NO'}
+            {trading ? <RefreshCcw size={12} className="animate-spin" /> : `Buy ${opp.recommendedSide ?? 'NO'}`}
           </button>
           {opp.marketUrl && (
             <a href={opp.marketUrl} target="_blank" rel="noopener noreferrer" className="p-1.5 hover:bg-zinc-700 rounded-lg transition-colors">
@@ -245,18 +259,22 @@ export default function Dashboard() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [statusRes, statsRes, oppsRes, posRes, ordersRes] = await Promise.all([
+      const [statusRes, statsRes, oppsRes, posRes, ordersRes, edgeHarvestRes] = await Promise.all([
         weatherApi.getStatus(),
         weatherApi.getStats(),
         weatherApi.getOpportunities(),
         weatherApi.getPositions(),
-        weatherApi.getOrders().catch(() => ({ orders: [] }))
+        weatherApi.getOrders().catch(() => ({ orders: [] })),
+        weatherApi.getEdgeHarvest().catch(() => ({ opportunities: [] }))
       ]);
       setStatus(statusRes);
       setStats(statsRes);
       setOpportunities(oppsRes.opportunities);
       setPositions(posRes.positions);
       setOrders(ordersRes.orders);
+      if (edgeHarvestRes.opportunities.length > 0) {
+        setEdgeHarvestOpps(edgeHarvestRes.opportunities);
+      }
       setSettings({ bankroll: statusRes.bankroll, isLive: statusRes.isLive });
     } catch (err) {
       console.error('Failed to fetch dashboard data', err);
@@ -311,7 +329,7 @@ export default function Dashboard() {
   const handleEdgeHarvestTrade = async (opp: EdgeHarvestOpportunity, size: number) => {
     setTrading(opp.id);
     try {
-      const result = await weatherApi.executeTrade(opp.id, 'NO', size);
+      const result = await weatherApi.executeTrade(opp.id, opp.recommendedSide ?? 'NO', size);
       if (result.success) {
         alert(`Successfully placed NO order for ${opp.city} ${opp.bucket} - $${size.toFixed(2)}`);
         fetchData();
@@ -617,6 +635,18 @@ export default function Dashboard() {
                           <td className="py-4 pl-4 pr-3 text-sm sm:pl-6">
                             <div className="font-semibold text-zinc-200">{pos.city}</div>
                             <div className="text-zinc-500 text-xs">{pos.bucket} ({pos.targetDate})</div>
+                            {(() => {
+                              const mt = (pos.opportunityId ?? '').includes('_low_') ? 'low' : 'high';
+                              return (
+                                <span className={`text-[10px] font-bold mt-1 px-1.5 py-0.5 rounded w-fit inline-block border ${
+                                  mt === 'low'
+                                    ? 'bg-sky-500/15 text-sky-300 border-sky-500/40'
+                                    : 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+                                }`}>
+                                  {mt === 'low' ? 'LOW TEMP' : 'HIGH TEMP'}
+                                </span>
+                              );
+                            })()}
                           </td>
                           <td className="px-3 py-4 text-sm">
                             <span className={`font-bold ${pos.side === 'YES' ? 'text-emerald-400' : 'text-rose-400'}`}>{pos.side}</span>

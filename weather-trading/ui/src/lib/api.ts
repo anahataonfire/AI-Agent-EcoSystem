@@ -50,10 +50,16 @@ export interface EdgeHarvestOpportunity {
     frontWarning: boolean;
     frontWarningSeverity: 'LOW' | 'MEDIUM' | 'HIGH' | null;
     frontWarningReason: string | null;
+    recommendedSide?: 'YES' | 'NO';
     clobTokenIds: [string, string];
     marketUrl: string;
     liquidity: number;
     hoursRemaining: number;
+    bestAskPrice?: number;
+    bestAskSize?: number;
+    bestBidPrice?: number;
+    bestBidSize?: number;
+    spread?: number;
 }
 
 export interface EdgeHarvestStats {
@@ -81,6 +87,7 @@ export interface Order {
 
 export interface Position {
     id: string;
+    opportunityId?: string;
     city: string;
     targetDate: string;
     bucket: string;
