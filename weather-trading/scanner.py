@@ -40,6 +40,7 @@ class WeatherMarket:
     market_url: str
     clob_token_ids: tuple = (None, None)  # (yes_token_id, no_token_id)
     market_type: str = "high"  # "high" or "low" — which daily extreme the market resolves on (PD-321 R3)
+    accepting_orders: bool = True  # Codex R3/R5 tradability — guards executor against orders to closed markets
 
     @property
     def hours_remaining(self) -> float:
@@ -505,6 +506,7 @@ class WeatherMarketScanner:
                         end_time=end_time,
                         market_url=f"https://polymarket.com/event/{slug}",
                         clob_token_ids=_parse_clob_token_ids(market),
+                        accepting_orders=bool(market.get('acceptingOrders', True)),
                         # market_type derived from the SLUG (canonical source), not
                         # the question — defends against bucket-only question text
                         # (PD-321 R4 Codex round 2 finding).
@@ -660,6 +662,7 @@ class WeatherMarketScanner:
                         market_url=f"https://polymarket.com/event/{event_slug}",
                         clob_token_ids=_parse_clob_token_ids(market),
                         market_type=market_type,
+                        accepting_orders=bool(market.get("acceptingOrders", True)),
                     )
                     markets.append(wm)
                 except (ValueError, KeyError, TypeError) as e:

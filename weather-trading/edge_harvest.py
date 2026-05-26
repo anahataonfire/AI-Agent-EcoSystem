@@ -108,6 +108,10 @@ class EdgeHarvestOpportunity:
     # PD-321 R3: "high" or "low" — which daily extreme this market resolves on
     market_type: str = "high"
 
+    # Codex R3/R5 tradability — propagated from WeatherMarket; guards api.py /api/trade
+    # against orders to markets whose CLOB book is closed.
+    accepting_orders: bool = True
+
     @property
     def bucket(self) -> str:
         """Alias for bucket_str (backwards compatibility with auto_harvest)."""
@@ -517,6 +521,7 @@ class EdgeHarvestScanner:
                     hours_remaining=getattr(market, 'hours_remaining', 0),
                     recommended_side="NO",
                     market_type=mtype,
+                    accepting_orders=bool(getattr(market, 'accepting_orders', True)),
                 )
                 no_token_id = market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None
                 if no_token_id:
@@ -590,6 +595,7 @@ class EdgeHarvestScanner:
                             hours_remaining=getattr(market, 'hours_remaining', 0),
                             recommended_side="YES",
                             market_type=mtype,
+                            accepting_orders=bool(getattr(market, 'accepting_orders', True)),
                         )
                         yes_token_id = market.clob_token_ids[0] if len(market.clob_token_ids) > 0 else None
                         if yes_token_id:

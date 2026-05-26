@@ -299,6 +299,14 @@ async def execute_trade(request: TradeRequest):
                 "Opportunity cache empty (backend restart). Click Run Scanner to refresh, then retry the trade."
             )
         raise HTTPException(404, "Opportunity not found in current scan (rolled off or stale ID)")
+
+    # Codex R3/R5 tradability guard — refuse orders to markets whose CLOB book is closed.
+    if opp.get("acceptingOrders") is False:
+        raise HTTPException(
+            423,
+            "Market is no longer accepting orders (Polymarket marked acceptingOrders=False). "
+            "Refresh the scanner to drop stale rows."
+        )
     
     size = request.size
     if size is None:
@@ -569,6 +577,7 @@ def scan_edge_harvest(request: Optional[ScanRequest] = None):
             "frontWarningReason": opp.front_warning_reason,
             "recommendedSide": opp.recommended_side,
             "marketType": getattr(opp, 'market_type', 'high'),
+            "acceptingOrders": bool(getattr(opp, 'accepting_orders', True)),
             "clobTokenIds": opp.clob_token_ids,
             "marketUrl": opp.market_url,
             "liquidity": opp.liquidity,
