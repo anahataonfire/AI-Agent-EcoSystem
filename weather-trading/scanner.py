@@ -480,13 +480,19 @@ class WeatherMarketScanner:
                     if end_time < now and not market.get('acceptingOrders', False):
                         continue
 
-                    # Get prices
+                    # Get prices. Codex R5: parse outcomePrices[1] for NO independently
+                    # — Polymarket's quotes can diverge from `1 - yes_price` due to
+                    # spread / market-maker drift / fees layered on the resolution side.
                     prices_str = market.get('outcomePrices', '[0.5]')
                     try:
                         prices = json.loads(prices_str) if isinstance(prices_str, str) else prices_str
                         yes_price = float(prices[0])
                     except (ValueError, IndexError, TypeError, json.JSONDecodeError):
                         yes_price = 0.5
+                    try:
+                        no_price = float(prices[1]) if len(prices) > 1 else 1.0 - yes_price
+                    except (ValueError, TypeError, IndexError):
+                        no_price = 1.0 - yes_price
 
                     city_info = WEATHER_CITIES.get(city_key, {})
 
@@ -500,7 +506,7 @@ class WeatherMarketScanner:
                         bucket_high=bucket_high,
                         bucket_unit=bucket_unit,
                         yes_price=yes_price,
-                        no_price=1 - yes_price,
+                        no_price=no_price,
                         liquidity=float(market.get('liquidity', 0)),
                         volume_24h=float(market.get('volume24hr', 0)),
                         end_time=end_time,
@@ -636,12 +642,17 @@ class WeatherMarketScanner:
                     if "lowest" in question.lower():
                         market_type = "low"
 
+                    # Codex R5: parse outcomePrices[1] for NO independently
                     prices_raw = market.get("outcomePrices", "[0.5]")
                     try:
                         prices = json.loads(prices_raw) if isinstance(prices_raw, str) else prices_raw
                         yes_price = float(prices[0])
                     except (ValueError, IndexError, TypeError, json.JSONDecodeError):
                         yes_price = 0.5
+                    try:
+                        no_price = float(prices[1]) if len(prices) > 1 else 1.0 - yes_price
+                    except (ValueError, TypeError, IndexError):
+                        no_price = 1.0 - yes_price
 
                     city_info = WEATHER_CITIES.get(city_key, {})
 
@@ -655,7 +666,7 @@ class WeatherMarketScanner:
                         bucket_high=bucket_high,
                         bucket_unit=bucket_unit,
                         yes_price=yes_price,
-                        no_price=1.0 - yes_price,
+                        no_price=no_price,
                         liquidity=float(market.get("liquidity", 0)),
                         volume_24h=float(market.get("volume24hr", 0)),
                         end_time=end_time,
