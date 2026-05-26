@@ -181,6 +181,38 @@ WEATHER_CITIES: Dict[str, Dict] = {
         "timezone": "America/Mexico_City",
         "resolution_source": "SMN Mexico",
     },
+    # PD-321 G5 rotation expansion — 28 cities from Polymarket's full daily-temperature
+    # rotation, added 2026-05-26. NWS office/grid left None for the US cities here
+    # (Austin/Houston/San Francisco) — Open-Meteo coverage is sufficient; operator can
+    # backfill NWS grids later if needed.
+    "amsterdam": {"name": "Amsterdam", "lat": 52.3676, "lon": 4.9041, "nws_office": None, "nws_grid": None, "timezone": "Europe/Amsterdam", "resolution_source": "KNMI"},
+    "austin": {"name": "Austin", "lat": 30.2672, "lon": -97.7431, "nws_office": None, "nws_grid": None, "timezone": "America/Chicago", "resolution_source": "NWS"},
+    "beijing": {"name": "Beijing", "lat": 39.9042, "lon": 116.4074, "nws_office": None, "nws_grid": None, "timezone": "Asia/Shanghai", "resolution_source": "CMA"},
+    "busan": {"name": "Busan", "lat": 35.1796, "lon": 129.0756, "nws_office": None, "nws_grid": None, "timezone": "Asia/Seoul", "resolution_source": "KMA"},
+    "cape_town": {"name": "Cape Town", "lat": -33.9249, "lon": 18.4241, "nws_office": None, "nws_grid": None, "timezone": "Africa/Johannesburg", "resolution_source": "SAWS"},
+    "chengdu": {"name": "Chengdu", "lat": 30.5728, "lon": 104.0668, "nws_office": None, "nws_grid": None, "timezone": "Asia/Shanghai", "resolution_source": "CMA"},
+    "chongqing": {"name": "Chongqing", "lat": 29.4316, "lon": 106.9123, "nws_office": None, "nws_grid": None, "timezone": "Asia/Shanghai", "resolution_source": "CMA"},
+    "guangzhou": {"name": "Guangzhou", "lat": 23.1291, "lon": 113.2644, "nws_office": None, "nws_grid": None, "timezone": "Asia/Shanghai", "resolution_source": "CMA"},
+    "helsinki": {"name": "Helsinki", "lat": 60.1699, "lon": 24.9384, "nws_office": None, "nws_grid": None, "timezone": "Europe/Helsinki", "resolution_source": "FMI"},
+    "houston": {"name": "Houston", "lat": 29.7604, "lon": -95.3698, "nws_office": None, "nws_grid": None, "timezone": "America/Chicago", "resolution_source": "NWS"},
+    "istanbul": {"name": "Istanbul", "lat": 41.0082, "lon": 28.9784, "nws_office": None, "nws_grid": None, "timezone": "Europe/Istanbul", "resolution_source": "Turkish State Meteorological Service"},
+    "jakarta": {"name": "Jakarta", "lat": -6.2088, "lon": 106.8456, "nws_office": None, "nws_grid": None, "timezone": "Asia/Jakarta", "resolution_source": "BMKG"},
+    "jeddah": {"name": "Jeddah", "lat": 21.4858, "lon": 39.1925, "nws_office": None, "nws_grid": None, "timezone": "Asia/Riyadh", "resolution_source": "NCM"},
+    "karachi": {"name": "Karachi", "lat": 24.8607, "lon": 67.0011, "nws_office": None, "nws_grid": None, "timezone": "Asia/Karachi", "resolution_source": "PMD"},
+    "kuala_lumpur": {"name": "Kuala Lumpur", "lat": 3.1390, "lon": 101.6869, "nws_office": None, "nws_grid": None, "timezone": "Asia/Kuala_Lumpur", "resolution_source": "MMD"},
+    "lucknow": {"name": "Lucknow", "lat": 26.8467, "lon": 80.9462, "nws_office": None, "nws_grid": None, "timezone": "Asia/Kolkata", "resolution_source": "IMD"},
+    "manila": {"name": "Manila", "lat": 14.5995, "lon": 120.9842, "nws_office": None, "nws_grid": None, "timezone": "Asia/Manila", "resolution_source": "PAGASA"},
+    "milan": {"name": "Milan", "lat": 45.4642, "lon": 9.1900, "nws_office": None, "nws_grid": None, "timezone": "Europe/Rome", "resolution_source": "ARPA Lombardia"},
+    "moscow": {"name": "Moscow", "lat": 55.7558, "lon": 37.6173, "nws_office": None, "nws_grid": None, "timezone": "Europe/Moscow", "resolution_source": "Roshydromet"},
+    "munich": {"name": "Munich", "lat": 48.1351, "lon": 11.5820, "nws_office": None, "nws_grid": None, "timezone": "Europe/Berlin", "resolution_source": "DWD"},
+    "panama_city": {"name": "Panama City", "lat": 8.9824, "lon": -79.5199, "nws_office": None, "nws_grid": None, "timezone": "America/Panama", "resolution_source": "ETESA"},
+    "qingdao": {"name": "Qingdao", "lat": 36.0671, "lon": 120.3826, "nws_office": None, "nws_grid": None, "timezone": "Asia/Shanghai", "resolution_source": "CMA"},
+    "san_francisco": {"name": "San Francisco", "lat": 37.7749, "lon": -122.4194, "nws_office": None, "nws_grid": None, "timezone": "America/Los_Angeles", "resolution_source": "NWS"},
+    "sao_paulo": {"name": "São Paulo", "lat": -23.5505, "lon": -46.6333, "nws_office": None, "nws_grid": None, "timezone": "America/Sao_Paulo", "resolution_source": "INMET"},
+    "shenzhen": {"name": "Shenzhen", "lat": 22.5431, "lon": 114.0579, "nws_office": None, "nws_grid": None, "timezone": "Asia/Shanghai", "resolution_source": "CMA"},
+    "singapore": {"name": "Singapore", "lat": 1.3521, "lon": 103.8198, "nws_office": None, "nws_grid": None, "timezone": "Asia/Singapore", "resolution_source": "MSS"},
+    "warsaw": {"name": "Warsaw", "lat": 52.2297, "lon": 21.0122, "nws_office": None, "nws_grid": None, "timezone": "Europe/Warsaw", "resolution_source": "IMGW"},
+    "wellington": {"name": "Wellington", "lat": -41.2865, "lon": 174.7762, "nws_office": None, "nws_grid": None, "timezone": "Pacific/Auckland", "resolution_source": "MetService NZ"},
 }
 
 # Active cities to scan — add markets as Polymarket lists them
@@ -190,6 +222,13 @@ ACTIVE_CITIES = [
     # International cities (Open-Meteo only)
     "london", "toronto", "buenos_aires", "paris", "ankara", "madrid",
     "seoul", "tokyo", "berlin", "sydney", "mexico_city",
+    # PD-321 G5 rotation expansion — 28 cities from Polymarket's full daily-temperature
+    # rotation. Added 2026-05-26.
+    "amsterdam", "austin", "beijing", "busan", "cape_town", "chengdu", "chongqing",
+    "guangzhou", "helsinki", "houston", "istanbul", "jakarta", "jeddah", "karachi",
+    "kuala_lumpur", "lucknow", "manila", "milan", "moscow", "munich", "panama_city",
+    "qingdao", "san_francisco", "sao_paulo", "shenzhen", "singapore", "warsaw",
+    "wellington",
 ]
 
 # Edge calculation settings
