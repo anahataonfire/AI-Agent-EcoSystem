@@ -343,28 +343,41 @@ class WeatherMarketScanner:
             year += 1
         return f"{year}-{month:02d}-{day:02d}"
     
-    def _generate_event_slugs(self, cities: List[str], days_ahead: int = 2) -> List[str]:
+    def _generate_event_slugs(self, cities: List[str], days_ahead: int = 2,
+                              skip_triples: Optional[set] = None) -> List[tuple]:
         """
         Generate expected event slugs for temperature markets.
-        
-        Polymarket uses slugs like: highest-temperature-in-nyc-on-january-14
+
+        Polymarket uses slugs like: highest-temperature-in-nyc-on-january-14.
+        Returns 4-tuples `(city_key, target_date, market_type, slug)`.
+
+        Codex perf follow-up: when `skip_triples` is supplied (a set of
+        `(city_key, target_date, market_type)` triples already covered by the
+        tag-feed), those triples are skipped at generation time — we issue
+        only the slug probes that tag-feed did NOT find. With a fully
+        warm tag-feed, this reduces ~282 probes (47 cities × 3 days × 2
+        flavors) to whatever's actually missing (often zero).
         """
         slugs = []
+        skip = skip_triples or set()
         now = datetime.now(timezone.utc)
         months_lower = ['', 'january', 'february', 'march', 'april', 'may', 'june',
                         'july', 'august', 'september', 'october', 'november', 'december']
-        
+
         for city_key in cities:
             slug_city = self.CITY_SLUG_NAMES.get(city_key, city_key.replace('_', '-'))
             for day_offset in range(days_ahead + 1):
                 target = now + timedelta(days=day_offset)
                 month_name = months_lower[target.month]
                 day = target.day
+                target_date = target.strftime("%Y-%m-%d")
                 # PD-321 R3: emit both highest- and lowest-temperature flavors.
-                # Polymarket's post-redesign product includes both extremes as separate events.
-                for prefix in ("highest-temperature-in", "lowest-temperature-in"):
+                for prefix, market_type in (("highest-temperature-in", "high"),
+                                            ("lowest-temperature-in", "low")):
+                    if (city_key, target_date, market_type) in skip:
+                        continue
                     slug = f"{prefix}-{slug_city}-on-{month_name}-{day}"
-                    slugs.append((city_key, target.strftime("%Y-%m-%d"), slug))
+                    slugs.append((city_key, target_date, market_type, slug))
 
         return slugs
     
@@ -418,14 +431,15 @@ class WeatherMarketScanner:
         return None
     
     def _fetch_slug_worker(self, args: tuple) -> List[dict]:
-        """Worker for parallel slug fetching. Returns list of (city_key, target_date, slug, event)."""
-        city_key, target_date, slug = args
+        """Worker for parallel slug fetching. Returns list of (city_key, target_date, market_type, slug, event)."""
+        city_key, target_date, market_type, slug = args
         event = self._fetch_event_by_slug(slug)
         if event and event.get('markets'):
-            return [(city_key, target_date, slug, event)]
+            return [(city_key, target_date, market_type, slug, event)]
         return []
 
-    def fetch_temperature_markets_by_slug(self, cities: List[str]) -> List[WeatherMarket]:
+    def fetch_temperature_markets_by_slug(self, cities: List[str],
+                                          skip_triples: Optional[set] = None) -> List[WeatherMarket]:
         """
         Fetch temperature markets by generating and checking slugs directly.
 
@@ -434,9 +448,13 @@ class WeatherMarketScanner:
         """
         markets = []
         now = datetime.now(timezone.utc)
-        slugs = self._generate_event_slugs(cities)
+        slugs = self._generate_event_slugs(cities, skip_triples=skip_triples)
 
-        logger.info(f"Checking {len(slugs)} potential temperature event slugs (parallel)...")
+        if skip_triples is not None:
+            total = len(cities) * 3 * 2  # cities × (days_ahead+1) × {high, low}
+            logger.info(f"Targeted slug discovery: {len(slugs)}/{total} probes (skipped {total - len(slugs)} triples already in tag-feed)")
+        else:
+            logger.info(f"Checking {len(slugs)} potential temperature event slugs (parallel)...")
 
         # Parallel fetch -- up to 10 concurrent requests to avoid hammering the API
         found_events = []
@@ -451,7 +469,7 @@ class WeatherMarketScanner:
 
         logger.info(f"Parallel slug discovery found {len(found_events)} events")
 
-        for city_key, target_date, slug, event in found_events:
+        for city_key, target_date, market_type, slug, event in found_events:
             logger.info(f"Found event: {event.get('title', slug)}")
 
             for market in event.get('markets', []):
@@ -719,14 +737,13 @@ class WeatherMarketScanner:
         markets.extend(tag_markets)
         seen_ids = {m.market_id for m in markets if m.market_id}
 
-        # Method B: slug-by-slug supplement. Always run; merge by market_id.
-        # Codex PD-321 R4 round 1: dropping this when tag-feed yields anything
-        # loses defense-in-depth against tag omissions / parser misses /
-        # one-side-of-rotation gaps. Keep the run, dedup by market_id.
-        # The 114 parallel slug probes preserve pre-R4 API load; targeted
-        # supplementation (only missing triples) is a follow-up optimization.
-        logger.info("Running slug-based discovery as supplement...")
-        slug_markets = self.fetch_temperature_markets_by_slug(city_filter)
+        # Method B: slug-by-slug supplement. Codex perf optimization: skip
+        # (city, date, market_type) triples already covered by tag-feed —
+        # we only probe slugs for triples NOT in Method A's output. With a
+        # warm tag-feed this typically drops 282 probes to <20.
+        seen_triples = {(m.city_key, m.target_date, m.market_type) for m in tag_markets}
+        logger.info("Running targeted slug-based discovery as supplement...")
+        slug_markets = self.fetch_temperature_markets_by_slug(city_filter, skip_triples=seen_triples)
         added = 0
         for m in slug_markets:
             if m.market_id and m.market_id in seen_ids:
