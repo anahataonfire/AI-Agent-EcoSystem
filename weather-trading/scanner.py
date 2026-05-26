@@ -344,14 +344,13 @@ class WeatherMarketScanner:
                     continue
             return False
         
-        # Try year-suffixed slug first (current Polymarket format: base-YYYY)
+        # PD-321 R5: only the year-suffixed slug ({slug}-YYYY). Polymarket's
+        # post-redesign weather product always emits year-suffixed slugs; the
+        # bare-slug fallback was returning Polymarket's most-recent-matching
+        # event which could be year-prior stale data. R4 tag-feed is now the
+        # primary discovery path; this slug fetcher is defense-in-depth only.
         current_year = now.year
         event = fetch_single(f"{slug}-{current_year}")
-        if is_current(event):
-            return event
-
-        # Fall back to base slug (older format)
-        event = fetch_single(slug)
         if is_current(event):
             return event
 
