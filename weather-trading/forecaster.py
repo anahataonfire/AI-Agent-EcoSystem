@@ -6,11 +6,13 @@ Fetches weather forecasts from NWS and Open-Meteo APIs.
 
 import json
 import logging
+import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
+from urllib.parse import urlparse
 
 from config import WEATHER_CITIES, API_CONFIG, celsius_to_fahrenheit
 
@@ -55,24 +57,85 @@ class WeatherForecaster:
     2. Open-Meteo (global) - free ECMWF/GFS access
     """
     
-    def __init__(self, request_timeout: float = 30.0):
+    # PD-325 perf-during-outage: per-host circuit breaker so an Open-Meteo 502
+    # storm trips fast (5 failures) and skips for a cooldown window instead of
+    # consuming ~20 min per harvest on 30s timeouts.
+    _CIRCUIT_THRESHOLD = 5
+    _CIRCUIT_COOLDOWN_SEC = 60
+
+    def __init__(self, request_timeout: float = 10.0):
         self.timeout = request_timeout
         self._cache: Dict[str, DailyForecast] = {}
-    
-    def _make_request(self, url: str, headers: Dict = None) -> Optional[Dict]:
-        """Make HTTP GET request and parse JSON response."""
-        try:
-            req = Request(url)
-            req.add_header("User-Agent", "WeatherTradingBot/1.0 (contact@example.com)")
-            if headers:
-                for key, value in headers.items():
-                    req.add_header(key, value)
-            
-            with urlopen(req, timeout=self.timeout) as response:
-                return json.loads(response.read().decode())
-        except (URLError, HTTPError, json.JSONDecodeError) as e:
-            logger.error(f"Request failed for {url}: {e}")
+        self._host_failures: Dict[str, int] = {}
+        self._host_open_until: Dict[str, datetime] = {}
+
+    def _circuit_blocks(self, host: str) -> bool:
+        """True if circuit is currently open for host."""
+        until = self._host_open_until.get(host)
+        if until is None:
+            return False
+        if datetime.now(timezone.utc) >= until:
+            # Cooldown elapsed — let next probe through; keep failure count so
+            # one more failure re-opens immediately.
+            self._host_open_until.pop(host, None)
+            return False
+        return True
+
+    def _record_failure(self, host: str):
+        self._host_failures[host] = self._host_failures.get(host, 0) + 1
+        if self._host_failures[host] >= self._CIRCUIT_THRESHOLD:
+            self._host_open_until[host] = (
+                datetime.now(timezone.utc) + timedelta(seconds=self._CIRCUIT_COOLDOWN_SEC)
+            )
+            logger.warning(
+                f"Circuit OPEN for {host} after {self._host_failures[host]} consecutive failures; "
+                f"skipping for {self._CIRCUIT_COOLDOWN_SEC}s"
+            )
+
+    def _record_success(self, host: str):
+        if self._host_failures.get(host, 0) or host in self._host_open_until:
+            logger.info(f"Circuit CLOSED for {host} (request succeeded)")
+        self._host_failures[host] = 0
+        self._host_open_until.pop(host, None)
+
+    def _make_request(self, url: str, headers: Dict = None, retries: int = 1) -> Optional[Dict]:
+        """Make HTTP GET request and parse JSON response.
+
+        Retries once on transient errors (502/504 gateway, socket timeout,
+        connection reset). Returns None on terminal failure so callers can
+        skip the city/date pair without crashing the whole harvest. PD-324
+        forecaster-resilience fix: TimeoutError (socket read timeout) was
+        not caught by the original URLError/HTTPError set and bubbled to
+        FastAPI as 500 during Open-Meteo outages.
+
+        PD-325 perf-during-outage: per-host circuit breaker short-circuits
+        subsequent calls after `_CIRCUIT_THRESHOLD` consecutive failures.
+        """
+        host = urlparse(url).netloc
+        if self._circuit_blocks(host):
             return None
+
+        for attempt in range(retries + 1):
+            try:
+                req = Request(url)
+                req.add_header("User-Agent", "WeatherTradingBot/1.0 (contact@example.com)")
+                if headers:
+                    for key, value in headers.items():
+                        req.add_header(key, value)
+
+                with urlopen(req, timeout=self.timeout) as response:
+                    data = json.loads(response.read().decode())
+                    self._record_success(host)
+                    return data
+            except (OSError, HTTPError, json.JSONDecodeError) as e:
+                if attempt < retries:
+                    logger.warning(f"Request failed for {url} (attempt {attempt+1}/{retries+1}): {e}. Retrying in 1s...")
+                    time.sleep(1.0)
+                    continue
+                logger.error(f"Request failed for {url} after {retries+1} attempts: {e}")
+                self._record_failure(host)
+                return None
+        return None
     
     def fetch_nws_forecast(self, city_key: str) -> Optional[List[HourlyForecast]]:
         """
