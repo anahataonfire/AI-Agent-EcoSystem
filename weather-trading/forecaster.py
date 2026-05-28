@@ -290,9 +290,12 @@ class WeatherForecaster:
         results = {}
         for date, high_c, low_c in zip(dates, highs, lows):
             if high_c is not None:
+                # Codex C fix: explicit None-check on low_c so 0°C doesn't
+                # get falsy-treated as missing (which flips low_source to
+                # SYNTHETIC and suppresses real LOW opps).
                 results[date] = {
                     "high_f": celsius_to_fahrenheit(high_c),
-                    "low_f": celsius_to_fahrenheit(low_c) if low_c else None,
+                    "low_f": celsius_to_fahrenheit(low_c) if low_c is not None else None,
                     "high_c": high_c,
                     "low_c": low_c
                 }
@@ -326,7 +329,10 @@ class WeatherForecaster:
         if om_daily and target_date in om_daily:
             day_data = om_daily[target_date]
             highs["OPEN_METEO"] = day_data["high_f"]
-            if day_data.get("low_f"):
+            # Codex C fix: explicit None-check — `low_f == 0` (32°F low) is
+            # real data, not absence. Falsy-skipping caused PD-325 follow-up
+            # to incorrectly mark such forecasts as SYNTHETIC.
+            if day_data.get("low_f") is not None:
                 lows["OPEN_METEO"] = day_data["low_f"]
             logger.info(f"Open-Meteo daily: {day_data['high_f']:.1f}F high for {city_key} {target_date}")
         

@@ -273,19 +273,25 @@ class WeatherMarketScanner:
             matched_unit = single_match.group(2).upper()
             return (temp, temp, matched_unit)
 
-        # Try "between X and Y" pattern
-        between_match = re.search(r'between\s+(-?\d+)\s*[FC]?\s+and\s+(-?\d+)\s*[FC]?', question, re.IGNORECASE)
+        # Try "between X and Y" pattern.
+        # Codex R5 fix: capture the unit from the question text rather than
+        # relying on the pre-detected `unit` variable, which requires a `°`
+        # to disambiguate C. Forms like "between 8 and 9C" or "between 8C
+        # and 9C" (no degree sign) were silently parsed as Fahrenheit.
+        between_match = re.search(r'between\s+(-?\d+)\s*([FC])?\s+and\s+(-?\d+)\s*([FC])?', question, re.IGNORECASE)
         if between_match:
             low = float(between_match.group(1))
-            high = float(between_match.group(2))
-            return (min(low, high), max(low, high), unit)
+            high = float(between_match.group(3))
+            matched_unit = (between_match.group(4) or between_match.group(2) or '').upper()
+            return (min(low, high), max(low, high), matched_unit or unit)
 
-        # Try range pattern "X-Y°F" or "X-YF"
-        range_match = re.search(r'be\s+(?:between\s+)?(-?\d+)-(-?\d+)\s*[FC]?', question, re.IGNORECASE)
+        # Try range pattern "X-Y°F" or "X-YF" (Codex R5 fix: capture unit).
+        range_match = re.search(r'be\s+(?:between\s+)?(-?\d+)-(-?\d+)\s*([FC])?', question, re.IGNORECASE)
         if range_match:
             low = float(range_match.group(1))
             high = float(range_match.group(2))
-            return (min(low, high), max(low, high), unit)
+            matched_unit = (range_match.group(3) or '').upper()
+            return (min(low, high), max(low, high), matched_unit or unit)
 
         return None
     
