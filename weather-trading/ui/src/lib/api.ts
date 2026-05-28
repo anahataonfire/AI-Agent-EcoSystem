@@ -51,6 +51,8 @@ export interface EdgeHarvestOpportunity {
     frontWarningSeverity: 'LOW' | 'MEDIUM' | 'HIGH' | null;
     frontWarningReason: string | null;
     recommendedSide?: 'YES' | 'NO';
+    marketType?: 'high' | 'low';
+    acceptingOrders?: boolean;
     clobTokenIds: [string, string];
     marketUrl: string;
     liquidity: number;

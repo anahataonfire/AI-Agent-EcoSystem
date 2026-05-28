@@ -133,7 +133,13 @@ const OpportunityRow = ({ opt, onTrade, trading }: { opt: Opportunity, onTrade: 
   );
 };
 
-const EdgeHarvestRow = ({ opp, onTrade, trading }: { opp: any, onTrade: (opp: any, size: number) => void, trading: boolean }) => {
+// Codex C v2: type the row against the API contract (was `any` before, so
+// the frontend silently accepted breaking changes to marketType/acceptingOrders
+// fields without compile-time check). `ev` is computed downstream from
+// riskScore+potentialReturnPct, not on the API contract.
+type EdgeHarvestRowOpp = EdgeHarvestOpportunity & { ev: number };
+
+const EdgeHarvestRow = ({ opp, onTrade, trading }: { opp: EdgeHarvestRowOpp, onTrade: (opp: EdgeHarvestRowOpp, size: number) => void, trading: boolean }) => {
   const dollarLiquidity = (opp.bestAskSize ?? 0) * (opp.bestAskPrice ?? 0);
   const isConservative = opp.thresholdType === 'CONSERVATIVE' && opp.riskTier === 'LOW';
   const maxSize = isConservative

@@ -248,17 +248,22 @@ class WeatherMarketScanner:
         unit = "C" if re.search(r'°\s*C\b', question, re.IGNORECASE) else "F"
         question = question.replace("°", "")  # Normalize
 
-        # Try "X or below" pattern
-        below_match = re.search(r'be\s+(-?\d+)\s*[FC]?\s+or\s+below', question, re.IGNORECASE)
+        # Try "X or below" pattern. Codex C v2 fix: capture explicit unit so
+        # bare "8C or below" (no degree sign) routes as Celsius. Without
+        # capture, Codex caught Celsius markets being scored against
+        # Fahrenheit bands and forecasts.
+        below_match = re.search(r'be\s+(-?\d+)\s*([FC])?\s+or\s+below', question, re.IGNORECASE)
         if below_match:
             temp = float(below_match.group(1))
-            return (float('-inf'), temp, unit)
+            matched_unit = (below_match.group(2) or '').upper()
+            return (float('-inf'), temp, matched_unit or unit)
 
-        # Try "X or above/higher" pattern
-        above_match = re.search(r'be\s+(-?\d+)\s*[FC]?\s+or\s+(?:above|higher)', question, re.IGNORECASE)
+        # Try "X or above/higher" pattern (same Codex C v2 capture fix).
+        above_match = re.search(r'be\s+(-?\d+)\s*([FC])?\s+or\s+(?:above|higher)', question, re.IGNORECASE)
         if above_match:
             temp = float(above_match.group(1))
-            return (temp, float('inf'), unit)
+            matched_unit = (above_match.group(2) or '').upper()
+            return (temp, float('inf'), matched_unit or unit)
 
         # Try single-integer pattern "be N°C on …" (PD-321 R2)
         # Polymarket post-redesign uses bare integers for 1°C C-cities (e.g. "be 22C on May 19?")
