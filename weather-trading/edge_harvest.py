@@ -112,10 +112,40 @@ class EdgeHarvestOpportunity:
     # against orders to markets whose CLOB book is closed.
     accepting_orders: bool = True
 
+    # PD-340 v3: settlement-location-basis correction + honest bands (display-only; operator owns sizing)
+    raw_bands: int = 0                              # bands on the raw (uncorrected) forecast
+    corrected_bands: Optional[int] = None           # bands on the basis-corrected forecast; None if uncorrected
+    effective_delta_c: float = 0.0                  # shrunk location offset applied (°C)
+    corrected_forecast_temp: Optional[float] = None # raw_forecast + effective_delta (market unit)
+    margin_c: Optional[float] = None                # signed °C: + = room outside bucket, − = forecast inside bucket
+    recommendation_status: str = "UNCORRECTED"      # ROOM / NO_ROOM / UNCORRECTED
+    basis_status: str = "uncorrected-no-data"       # corrected / uncorrected-no-data / uncorrected-coords-suspect
+    basis_confidence: str = "UNPROVEN"              # TRUSTED / PROVISIONAL / UNPROVEN
+    basis_n: int = 0
+    basis_version: Optional[int] = None
+
     @property
     def bucket(self) -> str:
         """Alias for bucket_str (backwards compatibility with auto_harvest)."""
         return self.bucket_str
+
+
+import os as _os
+import json as _json
+
+_BASIS_PATH = _os.path.join(_os.path.dirname(__file__), "backend", "city_basis.json")
+
+def _read_basis() -> dict:
+    """PD-340 v3: read the per-(city,market_type) location-basis profile fresh each scan.
+    Fail-honest: any error => empty profiles => every row is UNCORRECTED (raw bands shown)."""
+    try:
+        with open(_BASIS_PATH) as f:
+            d = _json.load(f)
+        if isinstance(d, dict) and isinstance(d.get("profiles"), dict):
+            return d
+    except Exception:
+        pass
+    return {"profiles": {}, "basis_version": None}
 
 
 class EdgeHarvestScanner:
@@ -150,7 +180,13 @@ class EdgeHarvestScanner:
     # bucket coverage in outcome space determines band size.
     BUCKET_WIDTH_F = 2.0  # F-bucket "86-87°F" covers integers {86, 87} → 2 outcomes
     BUCKET_WIDTH_C = 1.0  # C-bucket "22°C" covers integer {22} → 1 outcome
-    
+
+    # PD-340 v3: a corrected forecast is "ROOM" only if it sits this many std-devs of the
+    # city's own settlement noise outside the bucket. Tuned via scripts/backtest_honest_bands.py
+    # (time-split, 2026-06-02): 1.25 is the knee — catches 71% of losses, keeps 44% of wins
+    # ROOM, +15.6pt separation; dominates 1.5. Raise toward 2.0 to be more loss-averse.
+    ROOM_STDEV_THRESHOLD = 1.25
+
     def __init__(self):
         pass
     
@@ -208,7 +244,68 @@ class EdgeHarvestScanner:
 
         bands = int(degrees / bucket_width)
         return bands, degrees
-    
+
+    def _signed_margin_c(self, forecast, bucket_low, bucket_high, unit):
+        """Signed gap between forecast and bucket, in °C. + = room (outside), − = inside bucket."""
+        div = 1.8 if unit == "F" else 1.0
+        lo = bucket_low if (bucket_low is not None and bucket_low != float('-inf')) else None
+        hi = bucket_high if (bucket_high is not None and bucket_high != float('inf')) else None
+        if lo is None and hi is None:
+            return None
+        if lo is None:                       # ≤hi bucket
+            return round((forecast - hi) / div, 2)
+        if hi is None:                       # ≥lo bucket
+            return round((lo - forecast) / div, 2)
+        if forecast < lo:
+            return round((lo - forecast) / div, 2)
+        if forecast > hi:
+            return round((forecast - hi) / div, 2)
+        return round(-min(forecast - lo, hi - forecast) / div, 2)  # inside: negative depth
+
+    def _apply_basis(self, city, mtype, unit, forecast_temp, bucket_low, bucket_high, raw_bands):
+        """PD-340 v3: apply the shrunk location-delta offset → honest bands + recommendation_status.
+        Returns a dict of the EdgeHarvestOpportunity basis fields (spread via **_basis)."""
+        basis = getattr(self, "_basis_cache", None) or {"profiles": {}, "basis_version": None}
+        out = dict(
+            raw_bands=raw_bands, corrected_bands=None, effective_delta_c=0.0,
+            corrected_forecast_temp=None, margin_c=None,
+            recommendation_status="UNCORRECTED", basis_status="uncorrected-no-data",
+            basis_confidence="UNPROVEN", basis_n=0, basis_version=basis.get("basis_version"),
+        )
+        prof = basis.get("profiles", {}).get(city, {}).get(mtype)
+        if prof and prof.get("n"):
+            out["basis_n"] = prof["n"]
+        if not prof or prof.get("n", 0) < 3 or prof.get("mean_delta_c") is None:
+            return out
+        n = prof["n"]; mean = prof["mean_delta_c"]; sd = prof.get("stdev_delta_c")
+        W = prof.get("bucket_width_c", 1.0)
+        # coords-suspect: large systematic mean AND high volatility — cannot point-correct reliably.
+        if abs(mean) > W and sd is not None and sd > 2 * W:
+            out["basis_status"] = "uncorrected-coords-suspect"
+            return out
+        # Apply the FULL measured location offset (best estimate of the systematic shift).
+        # Reliability is expressed via the stdev-aware room judgment + confidence label, NOT by
+        # damping the offset. Build smoke test 2026-06-02 showed n-shrinkage UNDER-corrected tight
+        # thin cities (guangzhou +2.05°/stdev0.34) → false ROOM on a losing bet. Revises spec R2-C.
+        eff_c = mean
+        out["effective_delta_c"] = round(eff_c, 2)
+        eff_market = eff_c * 1.8 if unit == "F" else eff_c
+        corrected = forecast_temp + eff_market
+        out["corrected_forecast_temp"] = round(corrected, 1)
+        cb, _cd = self.calculate_bands_away(corrected, bucket_low, bucket_high, unit=unit)
+        out["corrected_bands"] = cb
+        margin = self._signed_margin_c(corrected, bucket_low, bucket_high, unit)
+        out["margin_c"] = margin
+        out["basis_status"] = "corrected"
+        out["basis_confidence"] = "TRUSTED" if (n >= 10 and sd is not None and sd <= 1.0 * W) else "PROVISIONAL"
+        # Room is measured in units of the city's OWN volatility: the bucket is genuinely "far"
+        # only if the corrected forecast sits >= 1.5 std-devs outside it. margin <= 0 => forecast
+        # inside the bucket => no room. This is what separates a real edge from settlement noise.
+        vol = max(sd if sd is not None else 1.0, 0.3)
+        room_ratio = (margin / vol) if margin is not None else 0.0
+        out["recommendation_status"] = "ROOM" if (margin is not None and margin > 0 and room_ratio >= self.ROOM_STDEV_THRESHOLD) else "NO_ROOM"
+        return out
+
     def calculate_model_spread(
         self,
         ecmwf: Optional[float],
@@ -417,7 +514,8 @@ class EdgeHarvestScanner:
         Returns list of opportunities sorted by potential return.
         """
         opportunities = []
-        
+        self._basis_cache = _read_basis()  # PD-340 v3: per-(city,market_type) location-basis profile (fail-honest, reloaded each scan)
+
         for market in markets:
             # Get forecast for this market
             key = (market.city_key, market.target_date)
@@ -448,6 +546,13 @@ class EdgeHarvestScanner:
                 market.bucket_low,
                 market.bucket_high,
                 unit=unit,
+            )
+
+            # PD-340 v3: correct the forecast by the measured settlement-location delta and
+            # compute HONEST bands. Display-only: this never gates/sizes; the operator reads it.
+            _basis = self._apply_basis(
+                market.city_key, mtype, unit, forecast_temp,
+                market.bucket_low, market.bucket_high, bands_away,
             )
 
             no_price = market.no_price
@@ -522,6 +627,7 @@ class EdgeHarvestScanner:
                     recommended_side="NO",
                     market_type=mtype,
                     accepting_orders=bool(getattr(market, 'accepting_orders', True)),
+                    **_basis,  # PD-340 v3: raw/corrected bands, margin, recommendation_status, basis_status, confidence
                 )
                 no_token_id = market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None
                 if no_token_id:

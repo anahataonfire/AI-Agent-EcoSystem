@@ -37,6 +37,18 @@ export interface EdgeHarvestOpportunity {
     bandsAway: number;
     degreesAway: number;
     thresholdType: 'CONSERVATIVE' | 'AGGRESSIVE';
+    // PD-340 v3 honest bands (settlement-location correction; display-only). Optional so
+    // stale cached opps lacking them degrade to UNCORRECTED in the UI (fail-honest).
+    rawBands?: number;
+    correctedBands?: number | null;
+    correctedForecast?: number | null;
+    effectiveDeltaC?: number;
+    marginC?: number | null;
+    recommendationStatus?: 'ROOM' | 'NO_ROOM' | 'UNCORRECTED';
+    basisStatus?: 'corrected' | 'uncorrected-no-data' | 'uncorrected-coords-suspect';
+    basisConfidence?: 'TRUSTED' | 'PROVISIONAL' | 'UNPROVEN';
+    basisN?: number;
+    basisVersion?: number | null;
     yesPrice: number;
     noPrice: number;
     potentialReturnPct: number;

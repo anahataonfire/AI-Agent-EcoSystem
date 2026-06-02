@@ -153,10 +153,22 @@ const EdgeHarvestRow = ({ opp, onTrade, trading }: { opp: EdgeHarvestRowOpp, onT
 
   const riskColor = opp.riskTier === 'LOW' ? 'text-emerald-400' : opp.riskTier === 'MEDIUM' ? 'text-yellow-400' : 'text-rose-400';
   const riskBg = opp.riskTier === 'LOW' ? 'bg-emerald-500/10' : opp.riskTier === 'MEDIUM' ? 'bg-yellow-500/10' : 'bg-rose-500/10';
-  const typeColor = opp.thresholdType === 'CONSERVATIVE' ? 'text-blue-400 bg-blue-500/10' : 'text-orange-400 bg-orange-500/10';
+  // PD-340 v3: settlement-basis status drives presentation. Missing → UNCORRECTED (fail-honest).
+  const recStatus = opp.recommendationStatus ?? 'UNCORRECTED';
+  const roomColor = recStatus === 'ROOM' ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/40'
+    : recStatus === 'NO_ROOM' ? 'text-rose-300 bg-rose-500/15 border-rose-500/40'
+    : 'text-zinc-400 bg-zinc-700/30 border-zinc-600/40';
+  const roomLabel = recStatus === 'ROOM' ? 'ROOM' : recStatus === 'NO_ROOM' ? 'NO ROOM' : 'UNVERIFIED';
+  const dlt = opp.effectiveDeltaC ?? 0;
+  const reason = recStatus === 'UNCORRECTED'
+    ? (opp.basisStatus === 'uncorrected-coords-suspect'
+        ? `erratic settlement · n=${opp.basisN ?? 0}`
+        : `unproven · n=${opp.basisN ?? 0}`)
+    : `settles ${dlt >= 0 ? '+' : ''}${dlt.toFixed(1)}°C vs your spot · n=${opp.basisN ?? 0}`;
+  const rowMuted = recStatus !== 'ROOM' ? 'opacity-60' : '';
 
   return (
-    <tr className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors group">
+    <tr className={`border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors group ${rowMuted}`}>
       <td className="py-4 pl-4 pr-3 sm:pl-6">
         <div className="flex flex-col">
           <span className="font-semibold text-zinc-100 uppercase text-sm">{opp.city}</span>
@@ -193,8 +205,19 @@ const EdgeHarvestRow = ({ opp, onTrade, trading }: { opp: EdgeHarvestRowOpp, onT
         </div>
       </td>
       <td className="px-3 py-4">
-        <span className="text-sm text-zinc-300">{opp.bandsAway ?? 0} bands</span>
-        <span className="text-xs text-zinc-500 ml-1">({(opp.degreesAway ?? 0).toFixed(0)}°{opp.bucket?.includes('°C') ? 'C' : 'F'})</span>
+        {recStatus === 'UNCORRECTED' ? (
+          <div className="flex flex-col">
+            <span className="text-sm text-zinc-400">{opp.bandsAway ?? 0} bands <span className="text-[10px] text-zinc-600">(raw)</span></span>
+            <span className="text-[10px] text-zinc-500 mt-0.5">{reason}</span>
+          </div>
+        ) : (
+          <div className="flex flex-col">
+            <span className={`text-sm font-semibold ${recStatus === 'ROOM' ? 'text-emerald-300' : 'text-rose-300'}`}>
+              {opp.correctedBands ?? 0} bands <span className="text-[10px] text-zinc-500">(corrected)</span>
+            </span>
+            <span className="text-[10px] text-zinc-500 mt-0.5">was {opp.bandsAway ?? 0} raw · {reason}</span>
+          </div>
+        )}
       </td>
       <td className="px-4 py-3 text-sm text-gray-300">${((opp.recommendedSide === 'YES' ? opp.yesPrice : (opp.bestAskPrice ?? opp.noPrice)) ?? 0).toFixed(2)}</td>
       <td className="px-4 py-3 text-sm text-gray-400">${dollarLiquidity.toFixed(0)}</td>
@@ -215,8 +238,9 @@ const EdgeHarvestRow = ({ opp, onTrade, trading }: { opp: EdgeHarvestRowOpp, onT
         </div>
       </td>
       <td className="px-3 py-4">
-        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${typeColor}`}>
-          {opp.thresholdType}
+        <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${roomColor}`}
+              title={`basis: ${opp.basisStatus ?? 'n/a'} · ${opp.basisConfidence ?? ''} · margin ${(opp.marginC ?? 0).toFixed(1)}°C`}>
+          {roomLabel}
         </span>
       </td>
       <td className="px-3 py-4 text-right sm:pr-6">
@@ -232,7 +256,10 @@ const EdgeHarvestRow = ({ opp, onTrade, trading }: { opp: EdgeHarvestRowOpp, onT
           <button
             onClick={() => onTrade(opp, size)}
             disabled={trading}
-            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-700 rounded-lg text-xs font-medium transition-colors flex items-center"
+            title={recStatus !== 'ROOM' ? `${roomLabel} — ${reason}` : undefined}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center disabled:bg-zinc-700 ${
+              recStatus === 'ROOM' ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300'
+            }`}
           >
             {trading ? <RefreshCcw size={12} className="animate-spin" /> : `Buy ${opp.recommendedSide ?? 'NO'}`}
           </button>
@@ -396,8 +423,11 @@ export default function Dashboard() {
 
   // Sort dates chronologically, then sort opportunities within each date by EV descending
   const sortedDates = Object.keys(groupedByDate).sort();
+  // PD-340 v3: ROOM first, then UNVERIFIED, then NO_ROOM (de-ranked); EV within each tier.
+  const statusRank = (o: typeof oppsWithEV[number]) =>
+    o.recommendationStatus === 'ROOM' ? 0 : o.recommendationStatus === 'NO_ROOM' ? 2 : 1;
   sortedDates.forEach(date => {
-    groupedByDate[date].sort((a, b) => b.ev - a.ev);
+    groupedByDate[date].sort((a, b) => statusRank(a) - statusRank(b) || b.ev - a.ev);
   });
 
   return (
