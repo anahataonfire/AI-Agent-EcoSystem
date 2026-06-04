@@ -160,7 +160,9 @@ const EdgeHarvestRow = ({ opp, onTrade, trading }: { opp: EdgeHarvestRowOpp, onT
     : 'text-zinc-400 bg-zinc-700/30 border-zinc-600/40';
   const roomLabel = recStatus === 'ROOM' ? 'ROOM' : recStatus === 'NO_ROOM' ? 'NO ROOM' : 'UNVERIFIED';
   const dlt = opp.effectiveDeltaC ?? 0;
-  const reason = recStatus === 'UNCORRECTED'
+  const reason = opp.openBucket
+    ? 'open-ended bucket — bet against the whole tail'
+    : recStatus === 'UNCORRECTED'
     ? (opp.basisStatus === 'uncorrected-coords-suspect'
         ? `erratic settlement · n=${opp.basisN ?? 0}`
         : `unproven · n=${opp.basisN ?? 0}`)

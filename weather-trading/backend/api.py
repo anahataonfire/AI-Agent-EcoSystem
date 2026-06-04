@@ -573,6 +573,7 @@ def scan_edge_harvest(request: Optional[ScanRequest] = None):
             "basisConfidence": getattr(opp, 'basis_confidence', 'UNPROVEN'),
             "basisN": getattr(opp, 'basis_n', 0),
             "basisVersion": getattr(opp, 'basis_version', None),
+            "openBucket": bool(getattr(opp, 'open_bucket', False)),
             "yesPrice": opp.yes_price,
             "noPrice": opp.no_price,
             "potentialReturnPct": opp.potential_return_pct,

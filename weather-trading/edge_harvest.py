@@ -123,6 +123,9 @@ class EdgeHarvestOpportunity:
     basis_confidence: str = "UNPROVEN"              # TRUSTED / PROVISIONAL / UNPROVEN
     basis_n: int = 0
     basis_version: Optional[int] = None
+    # PD-343: open-ended EXTREME bucket on the NO side (≥top for high, ≤bottom for low). That
+    # bucket aggregates the whole tail's probability mass; honest-bands can't bound it. Forced NO_ROOM.
+    open_bucket: bool = False
 
     @property
     def bucket(self) -> str:
@@ -554,6 +557,17 @@ class EdgeHarvestScanner:
                 market.city_key, mtype, unit, forecast_temp,
                 market.bucket_low, market.bucket_high, bands_away,
             )
+            # PD-343 open-bucket rule: selling NO on the open-ended EXTREME bucket (>=top for a
+            # high market, <=bottom for a low market) is a bet against the whole tail — that bucket
+            # is the catch-all for all extreme outcomes, not a single-degree slice, so honest-bands
+            # "room" (distance to the one closed edge) understates its probability and cannot bound
+            # the open side. Force NO_ROOM. Origin: tokyo >=28C -$542, buenos_aires >=27C -$225,
+            # seattle >=48F, nyc >=66F, atlanta >=78F (PD-340 loss analysis, ~$908 / 35% of losses).
+            _open_up = market.bucket_high is None or market.bucket_high == float('inf')
+            _open_down = market.bucket_low is None or market.bucket_low == float('-inf')
+            _basis['open_bucket'] = (mtype == 'high' and _open_up) or (mtype == 'low' and _open_down)
+            if _basis['open_bucket']:
+                _basis['recommendation_status'] = 'NO_ROOM'
 
             no_price = market.no_price
             if no_price is None or no_price <= 0:

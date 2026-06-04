@@ -49,6 +49,7 @@ export interface EdgeHarvestOpportunity {
     basisConfidence?: 'TRUSTED' | 'PROVISIONAL' | 'UNPROVEN';
     basisN?: number;
     basisVersion?: number | null;
+    openBucket?: boolean;
     yesPrice: number;
     noPrice: number;
     potentialReturnPct: number;
