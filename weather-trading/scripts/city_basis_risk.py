@@ -19,7 +19,7 @@ USAGE:
   python scripts/city_basis_risk.py --write-json    # + emit backend/city_basis.json (atomic)
 """
 import sqlite3, urllib.request, json, time, re, os, statistics, sys, tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import config
 
 DB = os.path.expanduser("~/Documents/Projects/Ecosystem/weather-trading/backend/weather_trading.db")
@@ -99,6 +99,14 @@ by_city = {}
 for e in events: by_city.setdefault(e["city"], []).append((e["target_date"], e["mt"]))
 all_dates = [e["target_date"] for e in events]
 gstart, gend = min(all_dates), max(all_dates)
+# The archive API 400s on end dates in the future (and lags realtime by a few
+# days) — one open position for tomorrow used to blank the WHOLE archive fetch
+# and silently emit 0 profiles. Clamp; unsettled recent dates just skip.
+_cap = (datetime.now(timezone.utc).date() - timedelta(days=2)).isoformat()
+if gend > _cap:
+    gend = _cap
+if gstart > gend:
+    gstart = gend
 
 cache = {}
 # deltas[(city, mt)] = [delta_c, ...]

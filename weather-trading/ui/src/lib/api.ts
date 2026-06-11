@@ -4,7 +4,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 const api = axios.create({
     baseURL: API_URL,
-    timeout: 360000,  // 6 minutes - scan can take 3+ min with VPN + suffix retries
+    timeout: 15000,  // fail fast by default; long-running calls override per-request
 });
 
 export interface Opportunity {
@@ -12,8 +12,8 @@ export interface Opportunity {
     city: string;
     targetDate: string;
     bucket: string;
-    bucketLow: number;
-    bucketHigh: number;
+    bucketLow: number | null;
+    bucketHigh: number | null;
     forecastTemp: number;
     yesPrice: number;
     noPrice: number;
@@ -112,9 +112,11 @@ export interface Position {
     size: number;
     shares: number;
     unrealizedPnl: number;
-    status: 'OPEN' | 'WON' | 'LOST';
+    pnl: number | null;
+    status: 'OPEN' | 'WON' | 'LOST' | 'EXPIRED' | 'MANUAL';
     hoursRemaining: number;
-    createdAt: string;
+    openedAt: string;
+    closedAt: string | null;
 }
 
 export interface Stats {
@@ -135,8 +137,10 @@ export interface Status {
     available: number;
     isLive: boolean;
     lastScan: string | null;
-    opportunitiesCount: number;
-    positionsCount: number;
+    positions: number;
+    // Ground truth from the executor itself; diverges from isLive only when a
+    // mode switch failed — absent on older backends.
+    executorLive?: boolean;
 }
 
 export const weatherApi = {
@@ -146,7 +150,8 @@ export const weatherApi = {
     },
 
     scan: async (cities?: string[]): Promise<{ opportunities: Opportunity[]; scanTime: string }> => {
-        const res = await api.post('/api/scan', cities ? { cities } : undefined);
+        // Scans block on live model + market fetches (minutes, not seconds).
+        const res = await api.post('/api/scan', cities ? { cities } : undefined, { timeout: 120000 });
         return res.data;
     },
 
@@ -155,12 +160,25 @@ export const weatherApi = {
         return res.data;
     },
 
-    executeTrade: async (opportunityId: string, side: string, size?: number): Promise<{ success: boolean; position?: Position; orderId?: string; error?: string }> => {
+    executeTrade: async (opportunityId: string, side: string, size?: number, override?: boolean): Promise<{
+        success: boolean;
+        position?: Position;
+        error?: string;
+        persistenceError?: string;
+        executionResult?: {
+            order_id?: string;
+            status?: string;
+            filled_amount?: number;
+            avg_price?: number;
+            price?: number;
+        };
+    }> => {
         const res = await api.post('/api/trade', {
             opportunity_id: opportunityId,
             side,
             size,
-        });
+            ...(override ? { override: true } : {}),
+        }, { timeout: 30000 });
         return res.data;
     },
 
@@ -192,7 +210,7 @@ export const weatherApi = {
         scanTime: string;
         stats: EdgeHarvestStats;
     }> => {
-        const res = await api.post('/api/edge-harvest', cities ? { cities } : undefined);
+        const res = await api.post('/api/edge-harvest', cities ? { cities } : undefined, { timeout: 120000 });
         return res.data;
     },
 
