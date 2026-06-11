@@ -71,6 +71,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
+from concurrent.futures import ThreadPoolExecutor
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -489,38 +490,93 @@ def get_stats():
 
 
 
+# PD-350 single-flight state for default-cities edge-harvest scans. When the
+# UI re-requests while a scan is running (its 6-min timeout used to fire mid-
+# scan), the new request JOINS the in-flight scan instead of stacking another
+# full scan in the threadpool — 3-4 concurrent scans were slowing each other
+# and amplifying Cloudflare rate-limiting.
+_EH_SCAN_SF = {"mutex": threading.Lock(), "event": None}
+
+
 @app.post("/api/edge-harvest")
 def scan_edge_harvest(request: Optional[ScanRequest] = None):
     """
     Scan for edge harvest opportunities.
-    
+
     Strategy: Buy NO on buckets far from forecast to collect 0.5-2% returns.
     Returns both CONSERVATIVE (3+ bands) and AGGRESSIVE (2+ bands) opportunities.
     """
     if not MODULES_LOADED:
         raise HTTPException(500, "Trading modules not loaded")
-    
-    cities = request.cities if request and request.cities else ACTIVE_CITIES
-    
+
+    if request and request.cities:
+        # Explicit city subset: run directly, no single-flight (results differ per request).
+        return _run_edge_harvest_scan(request.cities)
+
+    sf = _EH_SCAN_SF
+    with sf["mutex"]:
+        ev = sf["event"]
+        leader = ev is None
+        if leader:
+            ev = threading.Event()
+            sf["event"] = ev
+
+    if not leader:
+        logger.info("Edge harvest scan already in flight — joining its result")
+        if not ev.wait(timeout=600):
+            raise HTTPException(503, "Scan in progress; timed out waiting for it")
+        payload = getattr(ev, "payload", None)
+        if payload is None:
+            raise HTTPException(502, f"In-flight scan failed: {getattr(ev, 'error', 'unknown')}")
+        return payload
+
+    try:
+        payload = _run_edge_harvest_scan(ACTIVE_CITIES)
+        ev.payload = payload
+        return payload
+    except Exception as e:
+        ev.payload = None
+        ev.error = f"{type(e).__name__}: {e}"
+        raise
+    finally:
+        with sf["mutex"]:
+            sf["event"] = None
+        ev.set()
+
+
+def _run_edge_harvest_scan(cities: List[str]):
+    """Full edge-harvest scan body (markets → forecasts → opportunities)."""
     logger.info(f"Edge harvest scan for: {cities}")
-    
+
     scanner = get_scanner()
     forecaster = get_forecaster()
     edge_scanner = get_edge_harvest_scanner()
-    
+
     # Fetch markets
     markets = scanner.fetch_weather_markets(city_filter=cities)
     logger.info(f"Found {len(markets)} markets for edge harvest")
-    
-    # Fetch forecasts
-    forecasts = {}
-    for city in cities:
-        for offset in [0, 1, 2]:
-            target = (datetime.now(timezone.utc) + timedelta(days=offset)).strftime("%Y-%m-%d")
+
+    # Fetch forecasts — parallel per city (PD-350). The sequential loop was 47
+    # cities × 3 dates × ~1.1s Open-Meteo ≈ 159s of scan wall time; 10 workers
+    # plus the forecaster's per-city TTL cache bring it to ~10s.
+    targets = [
+        (datetime.now(timezone.utc) + timedelta(days=offset)).strftime("%Y-%m-%d")
+        for offset in (0, 1, 2)
+    ]
+
+    def _city_forecasts(city: str) -> list:
+        rows = []
+        for target in targets:
             forecast = forecaster.get_daily_high_forecast(city, target)
             if forecast:
-                forecasts[(city, target)] = forecast
-    
+                rows.append(((city, target), forecast))
+        return rows
+
+    forecasts = {}
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        for rows in pool.map(_city_forecasts, cities):
+            forecasts.update(rows)
+
     # Find edge harvest opportunities
     opportunities = edge_scanner.find_opportunities(markets, forecasts)
     logger.info(f"Found {len(opportunities)} edge harvest opportunities")

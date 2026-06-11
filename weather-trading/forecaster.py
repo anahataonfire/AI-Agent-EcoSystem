@@ -6,6 +6,7 @@ Fetches weather forecasts from NWS and Open-Meteo APIs.
 
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
@@ -69,11 +70,19 @@ class WeatherForecaster:
     _CIRCUIT_THRESHOLD = 5
     _CIRCUIT_COOLDOWN_SEC = 60
 
+    # PD-350: get_daily_high_forecast(city, date) refetched the full 7-day
+    # Open-Meteo payload for EVERY (city, date) lookup — 141 calls/scan at 47
+    # cities × 3 dates, ~159s of scan wall time. One fetch covers all dates a
+    # scan asks about, so a short per-city TTL collapses that to 47 calls.
+    _OM_DAILY_TTL_SEC = 120
+
     def __init__(self, request_timeout: float = 10.0):
         self.timeout = request_timeout
         self._cache: Dict[str, DailyForecast] = {}
         self._host_failures: Dict[str, int] = {}
         self._host_open_until: Dict[str, datetime] = {}
+        self._om_daily_cache: Dict[str, Tuple[datetime, Dict]] = {}
+        self._om_daily_lock = threading.Lock()
 
     def _circuit_blocks(self, host: str) -> bool:
         """True if circuit is currently open for host."""
@@ -265,9 +274,17 @@ class WeatherForecaster:
         city = WEATHER_CITIES.get(city_key)
         if not city:
             return None
-        
+
+        # PD-350: per-city TTL cache — one 7-day fetch serves every date the
+        # scan asks about. Failures are not cached, so retries stay live.
+        now = datetime.now(timezone.utc)
+        with self._om_daily_lock:
+            hit = self._om_daily_cache.get(city_key)
+            if hit and (now - hit[0]).total_seconds() < self._OM_DAILY_TTL_SEC:
+                return hit[1]
+
         lat, lon = city["lat"], city["lon"]
-        
+
         # Use Open-Meteo's daily endpoint with temperature_2m_max/min
         url = (
             f"{API_CONFIG['open_meteo_base_url']}"
@@ -302,7 +319,9 @@ class WeatherForecaster:
         
         if results:
             logger.info(f"Fetched {len(results)} daily forecasts from Open-Meteo for {city_key}")
-        
+            with self._om_daily_lock:
+                self._om_daily_cache[city_key] = (now, results)
+
         return results
     
     def get_daily_high_forecast(self, city_key: str, target_date: str) -> Optional[DailyForecast]:

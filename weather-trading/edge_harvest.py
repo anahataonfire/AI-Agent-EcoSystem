@@ -13,6 +13,7 @@ YES-side symmetry added in PD-195.
 
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -37,7 +38,38 @@ def _get_ro_client():
             if _RO_CLIENT is None:
                 from py_clob_client_v2 import ClobClient
                 _RO_CLIENT = ClobClient(host="https://clob.polymarket.com", chain_id=137)
+                _configure_clob_http_client()
     return _RO_CLIENT
+
+
+def _configure_clob_http_client():
+    """Swap the v2 lib's module-level httpx client for one with explicit timeouts.
+
+    The lib ships a single shared `httpx.Client(http2=True)` (5s default timeout)
+    that every CLOB call multiplexes over one h2 connection. Under Cloudflare
+    rate-limiting that stream can stall while keepalive frames keep the read
+    alive — observed 2026-06-10 as scans wedged in poll() for 9+ minutes.
+    Explicit read timeout plus _reset_ro_client() bound that failure mode.
+    """
+    try:
+        import httpx
+        import py_clob_client_v2.http_helpers.helpers as _clob_helpers
+        _clob_helpers._http_client = httpx.Client(
+            http2=True,
+            timeout=httpx.Timeout(10.0, connect=5.0),
+        )
+    except Exception as e:
+        logger.warning(f"Could not configure CLOB http client timeouts: {e}")
+
+
+def _reset_ro_client():
+    """Drop the cached client; next _get_ro_client() rebuilds it AND replaces the
+    lib's pooled h2 connection (recovery from a wedged/stalled stream). The old
+    httpx client is not closed — an abandoned in-flight call may still hold it;
+    it gets garbage-collected when that call dies."""
+    global _RO_CLIENT
+    with _RO_CLIENT_LOCK:
+        _RO_CLIENT = None
 
 
 @dataclass
@@ -469,6 +501,84 @@ class EdgeHarvestScanner:
 
         return tier, min(score, 10), factors
 
+    # PD-350: one batched POST per 250 tokens instead of ~1000 sequential GETs.
+    # Sequential was ~0.4s/book ≈ 6.4 min/scan once ACTIVE_CITIES went 19→47 —
+    # past the UI's 6-min timeout — and the hammering tripped Cloudflare
+    # rate-limiting that wedged the shared h2 connection (scan hung in poll()).
+    _BOOK_BATCH_SIZE = 250
+    _BOOK_BATCH_DEADLINE_SEC = 30
+
+    @staticmethod
+    def _parse_book(book: dict) -> dict:
+        """Parse a raw CLOB book (single or batch element) to best bid/ask.
+
+        Sort: bids ascending (best=last), asks descending (best=last) — PD-221
+        empirical; batch elements verified identical 2026-06-10 (0/5 mismatch
+        vs single-fetch on live tokens).
+        """
+        bids = book.get("bids", [])
+        asks = book.get("asks", [])
+        best_ask = float(asks[-1]["price"]) if asks else 0.0
+        best_ask_size = float(asks[-1]["size"]) if asks else 0.0
+        best_bid = float(bids[-1]["price"]) if bids else 0.0
+        best_bid_size = float(bids[-1]["size"]) if bids else 0.0
+        return {
+            "best_ask_price": best_ask,
+            "best_ask_size": best_ask_size,
+            "best_bid_price": best_bid,
+            "best_bid_size": best_bid_size,
+            "spread": best_ask - best_bid if best_ask and best_bid else 0.0,
+        }
+
+    def _batch_fetch_order_books(self, token_ids: List[str]) -> dict:
+        """Fetch order books for many tokens via the CLOB batch endpoint.
+
+        Returns {token_id: parsed_book} in _fetch_order_book's shape. Tokens
+        absent from the response (or in chunks that failed twice) map to zeroed
+        books — identical semantics to the single-fetch failure path. Each
+        chunk runs under a hard wall-clock deadline; on timeout/error the
+        pooled h2 connection is rebuilt and the chunk retried once, so a
+        stalled stream costs ≤60s instead of hanging the whole scan.
+        """
+        out: dict = {}
+        if not token_ids:
+            return out
+        for start in range(0, len(token_ids), self._BOOK_BATCH_SIZE):
+            chunk = token_ids[start:start + self._BOOK_BATCH_SIZE]
+            payload = [{"token_id": t} for t in chunk]
+            books = None
+            for attempt in (1, 2):
+                pool = ThreadPoolExecutor(max_workers=1)
+                try:
+                    fut = pool.submit(_get_ro_client().get_order_books, payload)
+                    books = fut.result(timeout=self._BOOK_BATCH_DEADLINE_SEC)
+                    break
+                except Exception as e:
+                    logger.warning(
+                        f"Batch order-book fetch failed (chunk {start // self._BOOK_BATCH_SIZE + 1}, "
+                        f"attempt {attempt}/2): {type(e).__name__}: {e} — resetting CLOB client"
+                    )
+                    _reset_ro_client()
+                finally:
+                    pool.shutdown(wait=False, cancel_futures=True)
+            if isinstance(books, list):
+                for b in books:
+                    try:
+                        tid = b.get("asset_id")
+                        if tid:
+                            out[tid] = self._parse_book(b)
+                    except (KeyError, ValueError, TypeError, AttributeError) as e:
+                        logger.warning(f"Unparseable batch book element: {e}")
+        missing = [t for t in token_ids if t not in out]
+        if missing:
+            logger.warning(
+                f"{len(missing)}/{len(token_ids)} order books missing after batch fetch; zero-filled"
+            )
+            for t in missing:
+                out[t] = {"best_ask_price": 0.0, "best_ask_size": 0.0,
+                          "best_bid_price": 0.0, "best_bid_size": 0.0, "spread": 0.0}
+        return out
+
     def _fetch_order_book(self, token_id: str) -> dict:
         """Fetch order book for a token. Returns best bid/ask info.
 
@@ -477,7 +587,13 @@ class EdgeHarvestScanner:
         Sort: bids ascending (best=last), asks descending (best=last).
         Verified empirically against LA + Dem Pres 2028 markets + V2 SDK
         get_price helper cross-check.
+
+        PD-350: consults the per-scan batch prefetch cache first; the network
+        path below only runs for tokens the prefetch never saw.
         """
+        cached = getattr(self, '_book_cache', {}).get(token_id)
+        if cached is not None:
+            return cached
         try:
             client = _get_ro_client()
             book = client.get_order_book(token_id)
@@ -488,20 +604,7 @@ class EdgeHarvestScanner:
                 return {"best_ask_price": 0.0, "best_ask_size": 0.0,
                         "best_bid_price": 0.0, "best_bid_size": 0.0, "spread": 0.0}
 
-            bids = book.get("bids", [])
-            asks = book.get("asks", [])
-            best_ask = float(asks[-1]["price"]) if asks else 0.0
-            best_ask_size = float(asks[-1]["size"]) if asks else 0.0
-            best_bid = float(bids[-1]["price"]) if bids else 0.0
-            best_bid_size = float(bids[-1]["size"]) if bids else 0.0
-
-            return {
-                "best_ask_price": best_ask,
-                "best_ask_size": best_ask_size,
-                "best_bid_price": best_bid,
-                "best_bid_size": best_bid_size,
-                "spread": best_ask - best_bid if best_ask and best_bid else 0.0
-            }
+            return self._parse_book(book)
         except Exception as e:
             logger.warning(f"Failed to fetch order book for {token_id}: {e}")
             return {"best_ask_price": 0.0, "best_ask_size": 0.0, "best_bid_price": 0.0, "best_bid_size": 0.0, "spread": 0.0}
@@ -518,6 +621,17 @@ class EdgeHarvestScanner:
         """
         opportunities = []
         self._basis_cache = _read_basis()  # PD-340 v3: per-(city,market_type) location-basis profile (fail-honest, reloaded each scan)
+
+        # PD-350: batch-prefetch every candidate order book up front (one POST
+        # per 250 tokens, ~4-8 calls total). _fetch_order_book reads this cache.
+        _tok_seen = set()
+        _tok_ids = []
+        for m in markets:
+            for t in (getattr(m, 'clob_token_ids', None) or ()):
+                if t and t not in _tok_seen:
+                    _tok_seen.add(t)
+                    _tok_ids.append(t)
+        self._book_cache = self._batch_fetch_order_books(_tok_ids)
 
         for market in markets:
             # Get forecast for this market
