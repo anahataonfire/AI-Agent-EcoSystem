@@ -548,19 +548,36 @@ class EdgeHarvestScanner:
             payload = [{"token_id": t} for t in chunk]
             books = None
             for attempt in (1, 2):
-                pool = ThreadPoolExecutor(max_workers=1)
-                try:
-                    fut = pool.submit(_get_ro_client().get_order_books, payload)
-                    books = fut.result(timeout=self._BOOK_BATCH_DEADLINE_SEC)
+                # Daemon watchdog thread (not an executor): a wedged h2 read can
+                # outlive the deadline, and non-daemon executor workers pinned to
+                # it would block interpreter exit / uvicorn reload.
+                result_box = {}
+
+                def _call(payload=payload, box=result_box):
+                    try:
+                        box["books"] = _get_ro_client().get_order_books(payload)
+                    except Exception as exc:  # surfaced via box, re-raised below
+                        box["exc"] = exc
+
+                t = threading.Thread(target=_call, daemon=True)
+                t.start()
+                t.join(timeout=self._BOOK_BATCH_DEADLINE_SEC)
+                got = result_box.get("books")
+                # Error-shaped 200s arrive as dicts (Codex F6 class) — treat any
+                # non-list result, exception, or deadline overrun as a failed
+                # attempt so the reset/retry machinery actually engages.
+                if isinstance(got, list):
+                    books = got
                     break
-                except Exception as e:
-                    logger.warning(
-                        f"Batch order-book fetch failed (chunk {start // self._BOOK_BATCH_SIZE + 1}, "
-                        f"attempt {attempt}/2): {type(e).__name__}: {e} — resetting CLOB client"
-                    )
-                    _reset_ro_client()
-                finally:
-                    pool.shutdown(wait=False, cancel_futures=True)
+                err = result_box.get("exc") or (
+                    f"non-list response: {type(got).__name__}" if got is not None
+                    else ("deadline exceeded" if t.is_alive() else "no result")
+                )
+                logger.warning(
+                    f"Batch order-book fetch failed (chunk {start // self._BOOK_BATCH_SIZE + 1}, "
+                    f"attempt {attempt}/2): {err} — resetting CLOB client"
+                )
+                _reset_ro_client()
             if isinstance(books, list):
                 for b in books:
                     try:

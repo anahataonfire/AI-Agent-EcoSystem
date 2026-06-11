@@ -213,7 +213,10 @@ class WeatherMarketScanner:
             
             with urlopen(req, timeout=self.timeout) as response:
                 return json.loads(response.read().decode())
-        except (URLError, HTTPError, json.JSONDecodeError) as e:
+        except (OSError, HTTPError, json.JSONDecodeError) as e:
+            # OSError (not just URLError) — a read-phase socket TimeoutError is a
+            # bare OSError sibling, not a URLError subclass; uncaught it 500s the
+            # whole scan. Same class as the PD-324 forecaster fix.
             logger.debug(f"Request failed for {url}: {e}")
             return None
     
@@ -512,6 +515,10 @@ class WeatherMarketScanner:
                     # Get prices. Codex R5: parse outcomePrices[1] for NO independently
                     # — Polymarket's quotes can diverge from `1 - yes_price` due to
                     # spread / market-maker drift / fees layered on the resolution side.
+                    # `prices = None` first — same cross-iteration leak guard as the
+                    # tag-feed path (a json.loads failure must not reuse the previous
+                    # market's prices, nor NameError on the first market).
+                    prices = None
                     prices_str = market.get('outcomePrices', '[0.5]')
                     try:
                         prices = json.loads(prices_str) if isinstance(prices_str, str) else prices_str
@@ -519,7 +526,11 @@ class WeatherMarketScanner:
                     except (ValueError, IndexError, TypeError, json.JSONDecodeError):
                         yes_price = 0.5
                     try:
-                        no_price = float(prices[1]) if len(prices) > 1 else 1.0 - yes_price
+                        no_price = (
+                            float(prices[1])
+                            if isinstance(prices, (list, tuple)) and len(prices) > 1
+                            else 1.0 - yes_price
+                        )
                     except (ValueError, TypeError, IndexError):
                         no_price = 1.0 - yes_price
 
@@ -671,7 +682,11 @@ class WeatherMarketScanner:
                     if "lowest" in question.lower():
                         market_type = "low"
 
-                    # Codex R5: parse outcomePrices[1] for NO independently
+                    # Codex R5: parse outcomePrices[1] for NO independently.
+                    # `prices = None` first: if json.loads raises, `prices` must not
+                    # keep the PREVIOUS market's binding (cross-market price
+                    # contamination), nor be unbound on the first iteration.
+                    prices = None
                     prices_raw = market.get("outcomePrices", "[0.5]")
                     try:
                         prices = json.loads(prices_raw) if isinstance(prices_raw, str) else prices_raw
@@ -679,7 +694,11 @@ class WeatherMarketScanner:
                     except (ValueError, IndexError, TypeError, json.JSONDecodeError):
                         yes_price = 0.5
                     try:
-                        no_price = float(prices[1]) if len(prices) > 1 else 1.0 - yes_price
+                        no_price = (
+                            float(prices[1])
+                            if isinstance(prices, (list, tuple)) and len(prices) > 1
+                            else 1.0 - yes_price
+                        )
                     except (ValueError, TypeError, IndexError):
                         no_price = 1.0 - yes_price
 

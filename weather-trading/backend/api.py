@@ -69,7 +69,7 @@ except ImportError:
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Literal, Optional
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 import logging
@@ -145,7 +145,10 @@ state = AppState()
 # Pydantic Models
 class TradeRequest(BaseModel):
     opportunity_id: str
-    side: str  # "YES" or "NO"
+    # Literal, not str: executor.py maps ANY string outside ["YES","NO","BUY"] to
+    # a SELL order — a lowercase "no" from a curl typo or future client would
+    # place a real wrong-direction trade. Reject at validation instead.
+    side: Literal["YES", "NO"]
     size: Optional[float] = None  # Override position size
 
 class ScanRequest(BaseModel):
@@ -559,14 +562,20 @@ def _run_edge_harvest_scan(cities: List[str]):
     # Fetch forecasts — parallel per city (PD-350). The sequential loop was 47
     # cities × 3 dates × ~1.1s Open-Meteo ≈ 159s of scan wall time; 10 workers
     # plus the forecaster's per-city TTL cache bring it to ~10s.
-    targets = [
-        (datetime.now(timezone.utc) + timedelta(days=offset)).strftime("%Y-%m-%d")
-        for offset in (0, 1, 2)
-    ]
+    #
+    # Keys come from the markets' own (city, target_date) pairs, NOT a UTC-derived
+    # date list: market target_date is the CITY-LOCAL date from the Polymarket
+    # slug. The old UTC 0/1/2-day list had no key for US-West "today" markets
+    # after 00:00 UTC (nor far-east +2-day markets), so find_opportunities
+    # silently dropped them every evening.
+    needed: dict = {}
+    for m in markets:
+        needed.setdefault(m.city_key, set()).add(m.target_date)
 
-    def _city_forecasts(city: str) -> list:
+    def _city_forecasts(item) -> list:
+        city, dates = item
         rows = []
-        for target in targets:
+        for target in sorted(dates):
             forecast = forecaster.get_daily_high_forecast(city, target)
             if forecast:
                 rows.append(((city, target), forecast))
@@ -574,7 +583,7 @@ def _run_edge_harvest_scan(cities: List[str]):
 
     forecasts = {}
     with ThreadPoolExecutor(max_workers=10) as pool:
-        for rows in pool.map(_city_forecasts, cities):
+        for rows in pool.map(_city_forecasts, list(needed.items())):
             forecasts.update(rows)
 
     # Find edge harvest opportunities
