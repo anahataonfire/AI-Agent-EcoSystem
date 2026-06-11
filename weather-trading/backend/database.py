@@ -194,6 +194,75 @@ def get_position_count() -> int:
     return count
 
 
+def _next_position_id(conn) -> str:
+    """MAX-based id, not COUNT-based: COUNT+1 collides after any row deletion,
+    and INSERT OR REPLACE then silently destroys the old row (PD-351 C2 — the
+    orders table provably lost its dry-run history to this exact mechanism)."""
+    row = conn.execute(
+        "SELECT COALESCE(MAX(CAST(SUBSTR(id, 5) AS INTEGER)), 0) "
+        "FROM positions WHERE id LIKE 'pos_%'"
+    ).fetchone()
+    return f"pos_{row[0] + 1}"
+
+
+def create_position_with_order(position: Dict[str, Any], order: Dict[str, Any]) -> str:
+    """Atomically assign the position id and insert position + order in ONE
+    transaction (PD-351 C1/C2). BEGIN IMMEDIATE holds the write lock across the
+    MAX read so concurrent trades cannot race the id. Plain INSERTs — a
+    collision must error loudly, never overwrite a real-money record.
+
+    Mutates `position["id"]`, `order["positionId"]`, and (if unset/dry-run)
+    `order["id"]`; returns the assigned position id.
+    """
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        pos_id = _next_position_id(conn)
+        position["id"] = pos_id
+        order["positionId"] = pos_id
+        # Dry-run orders all report order_id="dry_run" — as a PK that collapsed
+        # every paper order onto one row. Real CLOB ids are unique; everything
+        # else gets a position-derived id.
+        if not order.get("id") or order["id"] == "dry_run":
+            order["id"] = f"ord_{pos_id}"
+        conn.execute("""
+            INSERT INTO positions
+            (id, opportunity_id, order_id, city, bucket, target_date, side,
+             entry_price, shares, size, current_price, unrealized_pnl,
+             status, threshold_type, hours_remaining, opened_at, closed_at, pnl)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            position["id"], position.get("opportunityId"), position.get("orderId"),
+            position["city"], position["bucket"], position["targetDate"],
+            position["side"], position["entryPrice"], position.get("shares", 0),
+            position["size"], position.get("currentPrice"),
+            position.get("unrealizedPnl", 0), position.get("status", "OPEN"),
+            position.get("thresholdType"), position.get("hoursRemaining"),
+            position["openedAt"], position.get("closedAt"), position.get("pnl"),
+        ))
+        conn.execute("""
+            INSERT INTO orders
+            (id, position_id, opportunity_id, token_id, side, price,
+             size_shares, size_dollars, status, filled_amount, avg_price,
+             created_at, updated_at, error)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            order["id"], order.get("positionId"), order.get("opportunityId"),
+            order.get("tokenId"), order["side"], order["price"],
+            order["sizeShares"], order["sizeDollars"],
+            order.get("status", "PENDING"), order.get("filledAmount", 0),
+            order.get("avgPrice"), order["createdAt"],
+            order.get("updatedAt"), order.get("error"),
+        ))
+        conn.commit()
+        return pos_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def _row_to_position(row) -> Dict[str, Any]:
     """Convert a database row to a position dict matching the API format."""
     return {

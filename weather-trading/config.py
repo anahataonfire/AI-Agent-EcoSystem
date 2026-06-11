@@ -284,6 +284,25 @@ EXECUTION_CONFIG = {
     "short_side_execution_enabled": True,
 }
 
+# PD-351 server-side trade gates. Grounded in the realized book (736 settled,
+# Feb–Jun 2026): NO at p>=0.95 was net −$1,170 on $77k deployed (win% at or
+# below breakeven — tail losses eat the pennies); the 0.85–0.95 band was +6.5%
+# ROI; open-ended extreme buckets and basis-suspect cities produced the four
+# largest losses; losers were sized LARGER than winners ($136 vs $114 avg).
+# Every gate is overridable per-trade ({"override": true}) — gates inform
+# operator discretion, they don't replace it (PD-340 ruling).
+TRADE_GATES = {
+    # NO entries at/above this price require ROOM status + TRUSTED basis.
+    "no_price_ceiling": 0.95,
+    # Hard per-position size cap (NO-side downside = full size).
+    "max_loss_cap_usd": 150.0,
+    # Reject trades when the backing scan is older than this (cached prices are
+    # the execution prices — a restart-restored disk cache can be days old).
+    "max_scan_age_min": 15.0,
+    # Reject when the live ask has moved beyond this from the displayed price.
+    "requote_tolerance": 0.02,
+}
+
 # API endpoints
 API_CONFIG = {
     "nws_base_url": "https://api.weather.gov",

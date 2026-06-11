@@ -285,13 +285,21 @@ class WeatherForecaster:
 
         lat, lon = city["lat"], city["lon"]
 
-        # Use Open-Meteo's daily endpoint with temperature_2m_max/min
+        # Use Open-Meteo's daily endpoint with temperature_2m_max/min.
+        # PD-351: multi-model — best_match stays the consensus forecast the
+        # strategy keys on; ECMWF/GFS columns feed the model-spread risk signal,
+        # which was structurally dead (the single-model call had no per-model
+        # columns, so ecmwf_high was always None and spread read 0.0 for the 39
+        # non-NWS cities). NOTE: the models param REPLACES the default columns,
+        # so best_match must be requested explicitly; ecmwf_ifs04 is retired
+        # upstream (returns all-None) — ifs025 is the live ECMWF grid.
         url = (
             f"{API_CONFIG['open_meteo_base_url']}"
             f"?latitude={lat}&longitude={lon}"
             f"&daily=temperature_2m_max,temperature_2m_min"
             f"&forecast_days=7"
             f"&timezone=auto"
+            f"&models=best_match,ecmwf_ifs025,gfs_seamless"
         )
         
         data = self._make_request(url)
@@ -301,20 +309,33 @@ class WeatherForecaster:
         
         daily = data["daily"]
         dates = daily.get("time", [])
-        highs = daily.get("temperature_2m_max", [])
-        lows = daily.get("temperature_2m_min", [])
-        
+        # Suffixed columns when models= is present; plain names as fallback so a
+        # cached/old response shape still parses.
+        highs = daily.get("temperature_2m_max_best_match") or daily.get("temperature_2m_max") or []
+        lows = daily.get("temperature_2m_min_best_match") or daily.get("temperature_2m_min") or []
+        ec_highs = daily.get("temperature_2m_max_ecmwf_ifs025") or []
+        gfs_highs = daily.get("temperature_2m_max_gfs_seamless") or []
+
         results = {}
-        for date, high_c, low_c in zip(dates, highs, lows):
+        for i, date in enumerate(dates):
+            high_c = highs[i] if i < len(highs) else None
+            low_c = lows[i] if i < len(lows) else None
             if high_c is not None:
                 # Codex C fix: explicit None-check on low_c so 0°C doesn't
                 # get falsy-treated as missing (which flips low_source to
                 # SYNTHETIC and suppresses real LOW opps).
+                ec_c = ec_highs[i] if i < len(ec_highs) else None
+                gfs_c = gfs_highs[i] if i < len(gfs_highs) else None
                 results[date] = {
                     "high_f": celsius_to_fahrenheit(high_c),
                     "low_f": celsius_to_fahrenheit(low_c) if low_c is not None else None,
                     "high_c": high_c,
-                    "low_c": low_c
+                    "low_c": low_c,
+                    # Per-model highs for the spread/front-warning system. Kept
+                    # OUT of the consensus: avg_high must not move (strategy
+                    # forecast unchanged by PD-351).
+                    "ecmwf_high_f": celsius_to_fahrenheit(ec_c) if ec_c is not None else None,
+                    "gfs_high_f": celsius_to_fahrenheit(gfs_c) if gfs_c is not None else None,
                 }
         
         if results:
@@ -342,12 +363,19 @@ class WeatherForecaster:
         
         highs = {}
         lows = {}
-        
+        # Per-model highs (PD-351) — deliberately separate from `highs`: that
+        # dict is averaged into avg_high (the primary forecast) and must not
+        # shift when models are added.
+        ecmwf_high_f = None
+        gfs_high_f = None
+
         # PRIMARY: Use Open-Meteo DAILY endpoint (most accurate for daily max/min)
         om_daily = self.fetch_open_meteo_daily(city_key)
         if om_daily and target_date in om_daily:
             day_data = om_daily[target_date]
             highs["OPEN_METEO"] = day_data["high_f"]
+            ecmwf_high_f = day_data.get("ecmwf_high_f")
+            gfs_high_f = day_data.get("gfs_high_f")
             # Codex C fix: explicit None-check — `low_f == 0` (32°F low) is
             # real data, not absence. Falsy-skipping caused PD-325 follow-up
             # to incorrectly mark such forecasts as SYNTHETIC.
@@ -420,8 +448,11 @@ class WeatherForecaster:
             confidence=confidence,
             fetched_at=datetime.now(timezone.utc),
             forecast_range=forecast_range,
-            ecmwf_high=highs.get("ecmwf_ifs04") or highs.get("ECMWF_IFS04"),
-            gfs_high=highs.get("gfs_seamless") or highs.get("GFS_SEAMLESS") or highs.get("OPEN_METEO"),
+            # PD-351: real per-model values. The old keys never existed in
+            # `highs` (ecmwf was always None) and gfs silently aliased the
+            # Open-Meteo consensus — model "agreement" was an artifact.
+            ecmwf_high=ecmwf_high_f,
+            gfs_high=gfs_high_f,
             nws_high=highs.get("NWS"),
             low_source=low_source,
         )

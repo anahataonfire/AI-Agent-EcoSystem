@@ -89,7 +89,7 @@ app.add_middleware(
 
 # Import trading modules
 try:
-    from config import ACTIVE_CITIES, EDGE_CONFIG, EXECUTION_CONFIG
+    from config import ACTIVE_CITIES, EDGE_CONFIG, EXECUTION_CONFIG, TRADE_GATES
     from scanner import get_scanner
     from forecaster import get_forecaster
     from edge_calculator import get_edge_calculator
@@ -107,7 +107,7 @@ except ImportError as e:
     ]
 
 # Import and initialize database
-from database import init_db, save_position, load_positions, update_position_status, save_order, get_position_count, expire_stale_positions
+from database import init_db, save_position, load_positions, update_position_status, save_order, get_position_count, expire_stale_positions, create_position_with_order
 init_db()
 expire_stale_positions(hours=48)
 
@@ -129,11 +129,21 @@ class AppState:
             self.executor = PolymarketExecutor(dry_run=True)
     
     def set_live(self, live: bool):
-        self.is_live = live
+        """Synchronously swap the executor, THEN flip the flag (PD-351 H1).
+
+        The old background-thread swap left a seconds-long window where
+        is_live said one mode while trades executed on the other executor —
+        and a failed live init died silently, leaving is_live=True with a
+        dry-run executor forever. Raises on failure; caller surfaces it.
+        """
         if MODULES_LOADED:
-            def _reinit():
-                self.executor = PolymarketExecutor(dry_run=not live)
-            threading.Thread(target=_reinit, daemon=True).start()
+            new_executor = PolymarketExecutor(dry_run=not live)
+            if live and new_executor.client is None:
+                raise RuntimeError(
+                    "Live executor init failed (no CLOB client — check POLY_PRIVATE_KEY in .env)"
+                )
+            self.executor = new_executor
+        self.is_live = live
     
     def set_bankroll(self, amount: float):
         self.bankroll = amount
@@ -150,6 +160,9 @@ class TradeRequest(BaseModel):
     # place a real wrong-direction trade. Reject at validation instead.
     side: Literal["YES", "NO"]
     size: Optional[float] = None  # Override position size
+    # PD-351: trade past the strategy gates (price ceiling / open bucket /
+    # NO_ROOM / loss cap). Gates inform discretion, not replace it.
+    override: bool = False
 
 class ScanRequest(BaseModel):
     cities: Optional[List[str]] = None
@@ -170,6 +183,9 @@ def get_status():
         "available": state.bankroll - deployed,
         "positions": len(open_pos),
         "isLive": state.is_live,
+        # Ground truth from the executor itself, not the flag — these can only
+        # diverge if a mode switch failed, and that divergence must be visible.
+        "executorLive": bool(MODULES_LOADED and state.executor and not state.executor.dry_run),
         "lastScan": state.last_scan,
     }
 
@@ -182,9 +198,17 @@ def update_settings(request: SettingsRequest):
         logger.info(f"Updated bankroll to ${request.bankroll}")
     
     if request.is_live is not None:
-        state.set_live(request.is_live)
+        try:
+            state.set_live(request.is_live)
+        except Exception as e:
+            logger.error(f"Mode switch failed: {e}")
+            raise HTTPException(
+                500,
+                f"Could not switch to {'LIVE' if request.is_live else 'PAPER'}: {e}. "
+                f"Mode unchanged ({'LIVE' if state.is_live else 'PAPER'}).",
+            )
         logger.info(f"Trading mode set to: {'LIVE' if request.is_live else 'PAPER'}")
-    
+
     return {
         "success": True,
         "bankroll": state.bankroll,
@@ -285,11 +309,31 @@ def get_opportunities():
     return {"opportunities": state.opportunities, "lastScan": state.last_scan}
 
 
+# PD-351 M2: per-opportunity in-flight guard. execute_trade is now `def`
+# (threadpool — blocking CLOB I/O off the event loop), which removes the
+# accidental request serialization the old no-await `async def` provided, so
+# duplicate-click protection must be explicit.
+_TRADE_INFLIGHT = set()
+_TRADE_INFLIGHT_LOCK = threading.Lock()
+
+
 @app.post("/api/trade")
-async def execute_trade(request: TradeRequest):
+def execute_trade(request: TradeRequest):
     if not MODULES_LOADED:
         raise HTTPException(500, "Trading modules not loaded")
-    
+
+    with _TRADE_INFLIGHT_LOCK:
+        if request.opportunity_id in _TRADE_INFLIGHT:
+            raise HTTPException(409, "A trade for this opportunity is already in flight")
+        _TRADE_INFLIGHT.add(request.opportunity_id)
+    try:
+        return _execute_trade_inner(request)
+    finally:
+        with _TRADE_INFLIGHT_LOCK:
+            _TRADE_INFLIGHT.discard(request.opportunity_id)
+
+
+def _execute_trade_inner(request: TradeRequest):
     # Check both regular and edge harvest opportunities
     opp = next((o for o in state.opportunities if o["id"] == request.opportunity_id), None)
     if not opp:
@@ -311,7 +355,28 @@ async def execute_trade(request: TradeRequest):
             "Market is no longer accepting orders (Polymarket marked acceptingOrders=False). "
             "Refresh the scanner to drop stale rows."
         )
-    
+
+    # PD-351 H3: cached prices ARE the execution prices — refuse to trade off a
+    # stale scan (the disk-restored cache can be days old after a restart).
+    # Deliberately NOT overridable: stale quotes are objectively wrong, and a
+    # fresh scan is 20-40s away.
+    max_age_min = TRADE_GATES["max_scan_age_min"]
+    scan_age_min = None
+    if state.last_scan:
+        try:
+            scan_age_min = (
+                datetime.now(timezone.utc) - datetime.fromisoformat(state.last_scan)
+            ).total_seconds() / 60.0
+        except (ValueError, TypeError):
+            scan_age_min = None
+    if scan_age_min is None or scan_age_min > max_age_min:
+        age_txt = f"{scan_age_min:.0f} min old" if scan_age_min is not None else "of unknown age"
+        raise HTTPException(
+            409,
+            f"Scan data is {age_txt} (max {max_age_min:.0f} min for trading). "
+            f"Run Scanner to refresh prices, then retry.",
+        )
+
     size = request.size
     if size is None:
         if "positionSize" in opp:
@@ -371,84 +436,164 @@ async def execute_trade(request: TradeRequest):
     
     if not token_id:
         raise HTTPException(400, "No token ID available for this market")
-    
+
+    # PD-351 strategy gates — server-side enforcement of what the display
+    # already says (numbers + rationale in config.TRADE_GATES). Overridable
+    # per-trade: {"override": true}.
+    if not request.override:
+        reasons = []
+        if opp.get("thresholdType") and side == "NO":
+            if opp.get("openBucket"):
+                reasons.append(
+                    "open-ended extreme bucket — NO here bets against the whole tail "
+                    "(PD-343 loss class: tokyo ≥28°C −$542, BA ≥27°C −$225)"
+                )
+            if opp.get("recommendationStatus") == "NO_ROOM":
+                margin = opp.get("marginC")
+                margin_txt = f" (margin {margin:+.1f}°C)" if isinstance(margin, (int, float)) else ""
+                reasons.append(f"NO_ROOM — corrected forecast leaves no room{margin_txt}")
+            if price >= TRADE_GATES["no_price_ceiling"] and not (
+                opp.get("recommendationStatus") == "ROOM"
+                and opp.get("basisConfidence") == "TRUSTED"
+            ):
+                reasons.append(
+                    f"NO at ${price:.2f} ≥ ${TRADE_GATES['no_price_ceiling']:.2f} ceiling without "
+                    f"ROOM + TRUSTED basis — this band is net-negative in the realized book"
+                )
+        if size > TRADE_GATES["max_loss_cap_usd"]:
+            reasons.append(
+                f"size ${size:.0f} > ${TRADE_GATES['max_loss_cap_usd']:.0f} max-loss cap "
+                f"(downside on a {side} buy is the full size)"
+            )
+        if reasons:
+            raise HTTPException(400, {
+                "gate": True,
+                "reasons": reasons,
+                "hint": "Re-send with override:true to trade past the gates.",
+            })
+
+    # PD-351 H3 re-quote: the displayed ask is from scan time. A GTC limit at a
+    # stale price either overpays (ask moved up) or rests unfilled and invisible.
+    # Not overridable — if the price genuinely moved, re-scan and trade fresh.
+    if opp.get("thresholdType"):
+        live_book = get_edge_harvest_scanner()._fetch_order_book(token_id)
+        live_ask = live_book.get("best_ask_price") or 0.0
+        if live_ask <= 0:
+            raise HTTPException(
+                423,
+                "Live order book has no asks for this token — market likely closed or exhausted. Re-scan.",
+            )
+        if abs(live_ask - price) > TRADE_GATES["requote_tolerance"]:
+            raise HTTPException(
+                409,
+                f"Price moved since the scan: displayed ${price:.3f}, live ask ${live_ask:.3f} "
+                f"(tolerance ${TRADE_GATES['requote_tolerance']:.2f}). Re-scan to refresh.",
+            )
+
+    # ---- Order placement (own try: PD-351 C1/M3 — an exception here does NOT
+    # mean no order exists; a timeout after CLOB acceptance leaves a live order) ----
+    shares = size / price if price > 0 else 0
+    logger.info(f"Placing order: {side} {shares:.2f} shares @ ${price:.4f} (${size:.2f} notional)")
     try:
-        # Convert dollar amount to shares (CLOB API expects number of contracts)
-        shares = size / price if price > 0 else 0
-        logger.info(f"Placing order: {side} {shares:.2f} shares @ ${price:.4f} (${size:.2f} notional)")
-        
         result = state.executor.place_order(
             token_id=token_id,
             side=side,
             price=price,
             size=shares
         )
-        
-        # Only create position if order was actually successful
-        if not result.success:
-            error_msg = result.error or "Order placement failed"
-            logger.warning(f"Order failed: {error_msg}")
-            return {
+    except Exception as e:
+        logger.error(f"Order POST raised: {e}")
+        raise HTTPException(
+            502,
+            f"Order state UNKNOWN ({type(e).__name__}: {e}). The order MAY have been placed — "
+            f"check Open Orders / Polymarket before retrying.",
+        )
+
+    if not result.success:
+        error_msg = result.error or "Order placement failed"
+        logger.warning(f"Order failed: {error_msg}")
+        return {
+            "success": False,
+            "error": error_msg,
+            "executionResult": {
                 "success": False,
-                "error": error_msg,
-                "executionResult": {
-                    "success": False,
-                    "error": error_msg
-                }
+                "error": error_msg
             }
-        
-        position = {
-            "id": f"pos_{get_position_count() + 1}",
-            "opportunityId": opp["id"],
-            "city": opp["city"],
-            "bucket": opp["bucket"],
-            "targetDate": opp["targetDate"],
-            "side": side,
-            "entryPrice": price,
-            "shares": size / price if price > 0 else 0,  # Convert dollar amount to shares
-            "currentPrice": price,  # Same as entry for now
-            "size": size,
-            "status": "OPEN",
-            "openedAt": datetime.now(timezone.utc).isoformat(),
-            "orderId": result.order_id,
-            "unrealizedPnl": 0,
-            "hoursRemaining": opp.get("hoursRemaining", 24),
-            "thresholdType": opp.get("thresholdType"),  # Track edge harvest trades
         }
-        
-        state.positions.append(position)
-        save_position(position)
-        
-        # Also save the order record
-        save_order({
-            "id": result.order_id or f"ord_{get_position_count()}",
-            "positionId": position["id"],
-            "opportunityId": opp["id"],
-            "tokenId": token_id,
-            "side": side,
-            "price": price,
-            "sizeShares": shares,
-            "sizeDollars": size,
-            "status": "FILLED" if result.filled_amount > 0 else "SUBMITTED",
-            "filledAmount": result.filled_amount,
-            "avgPrice": result.avg_price,
-            "createdAt": datetime.now(timezone.utc).isoformat(),
-        })
-        
+
+    # ---- Persistence (separate try: PD-351 C1 — the order above is REAL even
+    # if these writes fail; never report a placed order as a failed trade) ----
+    position = {
+        "id": None,  # assigned atomically by create_position_with_order
+        "opportunityId": opp["id"],
+        "city": opp["city"],
+        "bucket": opp["bucket"],
+        "targetDate": opp["targetDate"],
+        "side": side,
+        "entryPrice": price,
+        "shares": shares,
+        "currentPrice": price,  # static until a pricing refresher exists
+        "size": size,
+        "status": "OPEN",
+        "openedAt": datetime.now(timezone.utc).isoformat(),
+        "orderId": result.order_id,
+        "unrealizedPnl": 0,
+        "hoursRemaining": opp.get("hoursRemaining", 24),
+        "thresholdType": opp.get("thresholdType"),  # Track edge harvest trades
+    }
+    order_record = {
+        # Real CLOB ids are unique; dry-run/missing ids get a position-derived
+        # id inside create_position_with_order (the old "dry_run" PK collapsed
+        # all paper orders onto one row).
+        "id": result.order_id,
+        "positionId": None,  # assigned with the position id
+        "opportunityId": opp["id"],
+        "tokenId": token_id,
+        "side": side,
+        "price": price,
+        "sizeShares": shares,
+        "sizeDollars": size,
+        # PD-351 M1 honest status: "live" = RESTING on the book, not filled.
+        "status": {"matched": "FILLED", "dry_run": "FILLED", "live": "LIVE",
+                   "delayed": "DELAYED"}.get(result.status, (result.status or "SUBMITTED").upper()),
+        "filledAmount": result.filled_amount,
+        "avgPrice": result.avg_price,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+    execution_result = {
+        "success": True,
+        "order_id": result.order_id,
+        "status": result.status,
+        "filled_amount": result.filled_amount,
+        "avg_price": result.avg_price,
+        "price": price,
+    }
+    try:
+        create_position_with_order(position, order_record)
+        # Newest-first to match the DB load order (the old append() buried fresh
+        # trades at the bottom of an 900-row table).
+        state.positions.insert(0, position)
+    except Exception as e:
+        logger.error(
+            f"PERSISTENCE FAILED for placed order {result.order_id}: {e} — "
+            f"the order is REAL; reconcile manually."
+        )
         return {
             "success": True,
             "position": position,
-            "executionResult": {
-                "success": True,
-                "order_id": result.order_id,
-                "filled_amount": result.filled_amount,
-                "avg_price": result.avg_price
-            }
+            "persistenceError": (
+                f"{type(e).__name__}: {e} — the order WAS placed "
+                f"(id {result.order_id}); it is missing from local records. "
+                f"Do NOT re-click; reconcile via Open Orders."
+            ),
+            "executionResult": execution_result,
         }
-    
-    except Exception as e:
-        logger.error(f"Trade execution failed: {e}")
-        raise HTTPException(500, f"Trade failed: {str(e)}")
+
+    return {
+        "success": True,
+        "position": position,
+        "executionResult": execution_result,
+    }
 
 
 @app.get("/api/positions")
@@ -476,7 +621,13 @@ def get_stats():
     
     wins = len([p for p in closed_pos if p["status"] == "WON"])
     losses = len([p for p in closed_pos if p["status"] == "LOST"])
-    total_pnl = sum(p.get("unrealizedPnl", 0) for p in state.positions)
+    # PD-351 M5: realized pnl is the truth (backfill-populated); unrealizedPnl
+    # is a static 0 written at open. The old sum-of-unrealized read ~$0 forever
+    # on a book that had lost $901.
+    total_pnl = sum(
+        (p.get("pnl") if p.get("pnl") is not None else p.get("unrealizedPnl", 0)) or 0
+        for p in state.positions
+    )
     deployed = sum(p.get("size", 0) for p in open_pos)
     
     return {
@@ -709,7 +860,9 @@ def get_open_orders():
     # Try to fetch live orders from CLOB
     if state.is_live and state.executor.client:
         try:
-            live_orders = state.executor.client.get_orders()
+            # V2 SDK: get_open_orders (V1's get_orders doesn't exist post-migration —
+            # this call AttributeError'd silently for weeks, PD-351 H2).
+            live_orders = state.executor.client.get_open_orders()
             if live_orders:
                 for o in live_orders:
                     orders.append({
@@ -759,7 +912,9 @@ def cancel_order(order_id: str):
         raise HTTPException(400, "Cannot cancel orders in paper mode")
     
     try:
-        result = state.executor.client.cancel(order_id)
+        # V2 SDK: cancel_order(OrderPayload) — V1's cancel(order_id) doesn't exist.
+        from py_clob_client_v2 import OrderPayload
+        result = state.executor.client.cancel_order(OrderPayload(orderID=order_id))
         logger.info(f"Cancel order {order_id}: {result}")
         return {"success": True, "result": result}
     except Exception as e:
@@ -769,4 +924,6 @@ def cancel_order(order_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+    # Loopback only: /api/trade and /api/settings are unauthenticated — on
+    # 0.0.0.0 any LAN device could place real orders or flip live mode.
+    uvicorn.run("api:app", host="127.0.0.1", port=8000, reload=True)

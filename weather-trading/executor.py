@@ -16,6 +16,10 @@ class OrderResult:
     filled_amount: float = 0.0
     avg_price: float = 0.0
     error: Optional[str] = None
+    # CLOB acceptance status: "matched" = filled, "live" = RESTING on the book,
+    # "delayed" = queued; "dry_run" for paper. PD-351 M1: filled_amount used to
+    # be fabricated as the requested size for ANY accepted GTC.
+    status: Optional[str] = None
 
 class PolymarketExecutor:
     def __init__(self, dry_run: bool = True):
@@ -91,7 +95,7 @@ class PolymarketExecutor:
                     size: float, price: float) -> OrderResult:
         if self.dry_run:
             logger.info(f"[DRY RUN] {side} {size:.2f} @ {price:.2f}")
-            return OrderResult(True, "dry_run", size, price)
+            return OrderResult(True, "dry_run", size, price, status="dry_run")
 
         # Check VPN/connectivity before attempting trade
         try:
@@ -175,7 +179,12 @@ class PolymarketExecutor:
             logger.warning(f"Order placed but no orderID returned: result={result}")
             return OrderResult(False, error=f"no orderID in result: {result}")
 
-        return OrderResult(True, order_id, size, price)
+        # PD-351 M1 honest fills: a GTC accepted as "live" is RESTING unfilled —
+        # reporting filled_amount=size for it booked phantom fills (946/946 orders
+        # in the DB said FILLED). Only "matched" means the order traded.
+        status = (result.get("status") or "").lower() if isinstance(result, dict) else ""
+        filled = size if status == "matched" else 0.0
+        return OrderResult(True, order_id, filled, price, status=status or "unknown")
 
     def buy(self, token_id: str, dollar_amount: float, max_price: float) -> OrderResult:
         shares = dollar_amount / max_price

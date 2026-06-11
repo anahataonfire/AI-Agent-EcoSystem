@@ -847,73 +847,9 @@ class WeatherMarketScanner:
         
         return markets
     
-    def fetch_markets_from_graph(self, city_filter: List[str] = None) -> List[WeatherMarket]:
-        """
-        Fetch markets using The Graph with known condition IDs.
-        
-        This is the most reliable method - uses on-chain data.
-        """
-        try:
-            from graph_client import get_graph_client
-            from market_ids import get_markets_for_today_tomorrow, TemperatureMarketInfo
-        except ImportError as e:
-            logger.debug(f"Graph client not available: {e}")
-            return []
-        
-        if city_filter is None:
-            city_filter = ACTIVE_CITIES
-        
-        markets = []
-        graph = get_graph_client()
-        now = datetime.now(timezone.utc)
-        
-        for city_key in city_filter:
-            # Get known market IDs for this city
-            known_markets = get_markets_for_today_tomorrow(city_key)
-            
-            if not known_markets:
-                logger.debug(f"No known markets for {city_key}")
-                continue
-            
-            # Fetch prices from Graph for each market
-            for market_info in known_markets:
-                on_chain = graph.get_market_by_condition(market_info.condition_id)
-                
-                if not on_chain:
-                    logger.debug(f"No Graph data for {market_info.condition_id}")
-                    continue
-                
-                city_info = WEATHER_CITIES.get(city_key, {})
-                
-                # Build market question from metadata
-                if market_info.bucket_high == float('inf'):
-                    question = f"{market_info.bucket_low}°{market_info.bucket_unit} or above"
-                elif market_info.bucket_low == float('-inf'):
-                    question = f"{market_info.bucket_high}°{market_info.bucket_unit} or below"
-                else:
-                    question = f"{market_info.bucket_low}-{market_info.bucket_high}°{market_info.bucket_unit}"
-                
-                wm = WeatherMarket(
-                    market_id=market_info.condition_id,
-                    question=question,
-                    city=city_info.get('name', city_key),
-                    city_key=city_key,
-                    target_date=market_info.target_date,
-                    bucket_low=market_info.bucket_low,
-                    bucket_high=market_info.bucket_high,
-                    bucket_unit=market_info.bucket_unit,
-                    yes_price=on_chain.yes_price,
-                    no_price=on_chain.no_price,
-                    liquidity=on_chain.liquidity,
-                    volume_24h=on_chain.volume,
-                    end_time=now + timedelta(days=1),  # Estimate
-                    market_url=f"https://polymarket.com/market/{market_info.slug}",
-                )
-                
-                markets.append(wm)
-                logger.info(f"Found market via Graph: {city_key} {question} @ {on_chain.yes_price:.2f}")
-        
-        return markets
+    # fetch_markets_from_graph removed (PD-351): zero call sites; depended on
+    # graph_client.py + market_ids.py whose hardcoded condition ids were
+    # truncated placeholders from January — it could never have worked.
 
 
 # Module-level singleton

@@ -7,7 +7,15 @@ HARVEST="/Users/adamc/Documents/Projects/Ecosystem/weather-trading/auto_harvest.
 LOG_DIR="/Users/adamc/Documents/Projects/Ecosystem/weather-trading/logs"
 ALERT_TO="adam@bdcllc.io"
 
-"$PYTHON" "$HARVEST" --live
+# PD-351 H5: live mode requires explicit opt-in (export WT_AUTOHARVEST_LIVE=1).
+# The hardcoded --live meant one `launchctl load` + one pip install would re-arm
+# invisible real-money auto-trading that bypasses the PD-340/343/351 gates and
+# never writes positions to the DB.
+if [ "$WT_AUTOHARVEST_LIVE" = "1" ]; then
+  "$PYTHON" "$HARVEST" --live
+else
+  "$PYTHON" "$HARVEST"
+fi
 EXIT_CODE=$?
 
 if [ "$EXIT_CODE" -ne 0 ]; then
