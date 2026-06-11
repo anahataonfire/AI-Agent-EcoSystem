@@ -1,6 +1,6 @@
 {
   "basis_version": 1,
-  "generated_at": "2026-06-02T03:29:59.292095+00:00",
+  "generated_at": "2026-06-11T15:15:45.646953+00:00",
   "shrinkage_k": 5,
   "profiles": {
     "amsterdam": {
@@ -14,18 +14,18 @@
     },
     "ankara": {
       "high": {
-        "n": 5,
-        "mean_delta_c": 0.52,
-        "stdev_delta_c": 0.53,
+        "n": 6,
+        "mean_delta_c": 0.32,
+        "stdev_delta_c": 0.66,
         "unit": "C",
         "bucket_width_c": 1.0
       }
     },
     "atlanta": {
       "high": {
-        "n": 46,
-        "mean_delta_c": 0.9,
-        "stdev_delta_c": 1.1,
+        "n": 48,
+        "mean_delta_c": 0.87,
+        "stdev_delta_c": 1.12,
         "unit": "F",
         "bucket_width_c": 1.111
       }
@@ -50,8 +50,8 @@
     },
     "buenos_aires": {
       "high": {
-        "n": 24,
-        "mean_delta_c": 1.07,
+        "n": 26,
+        "mean_delta_c": 1.09,
         "stdev_delta_c": 0.86,
         "unit": "C",
         "bucket_width_c": 1.0
@@ -77,18 +77,18 @@
     },
     "chengdu": {
       "high": {
-        "n": 3,
-        "mean_delta_c": 0.5,
-        "stdev_delta_c": 1.42,
+        "n": 7,
+        "mean_delta_c": 0.44,
+        "stdev_delta_c": 1.32,
         "unit": "C",
         "bucket_width_c": 1.0
       }
     },
     "chicago": {
       "high": {
-        "n": 10,
-        "mean_delta_c": 1.17,
-        "stdev_delta_c": 1.52,
+        "n": 13,
+        "mean_delta_c": 1.58,
+        "stdev_delta_c": 1.53,
         "unit": "F",
         "bucket_width_c": 1.111
       }
@@ -104,36 +104,36 @@
     },
     "dallas": {
       "high": {
-        "n": 7,
-        "mean_delta_c": 0.71,
-        "stdev_delta_c": 1.22,
+        "n": 10,
+        "mean_delta_c": 0.8,
+        "stdev_delta_c": 1.34,
         "unit": "F",
         "bucket_width_c": 1.111
       }
     },
     "denver": {
       "high": {
-        "n": 8,
-        "mean_delta_c": -0.09,
-        "stdev_delta_c": 0.52,
+        "n": 9,
+        "mean_delta_c": -0.11,
+        "stdev_delta_c": 0.49,
         "unit": "F",
         "bucket_width_c": 1.111
       }
     },
     "guangzhou": {
       "high": {
-        "n": 4,
-        "mean_delta_c": 2.05,
-        "stdev_delta_c": 0.34,
+        "n": 6,
+        "mean_delta_c": 2.5,
+        "stdev_delta_c": 1.2,
         "unit": "C",
         "bucket_width_c": 1.0
       }
     },
     "helsinki": {
       "high": {
-        "n": 2,
-        "mean_delta_c": 1.15,
-        "stdev_delta_c": 0.55,
+        "n": 3,
+        "mean_delta_c": 2.07,
+        "stdev_delta_c": 1.37,
         "unit": "C",
         "bucket_width_c": 1.0
       }
@@ -149,9 +149,9 @@
     },
     "jeddah": {
       "high": {
-        "n": 5,
-        "mean_delta_c": 2.16,
-        "stdev_delta_c": 0.75,
+        "n": 10,
+        "mean_delta_c": 2.37,
+        "stdev_delta_c": 0.81,
         "unit": "C",
         "bucket_width_c": 1.0
       }
@@ -176,9 +176,9 @@
     },
     "london": {
       "high": {
-        "n": 8,
+        "n": 9,
         "mean_delta_c": -0.78,
-        "stdev_delta_c": 1.68,
+        "stdev_delta_c": 1.58,
         "unit": "C",
         "bucket_width_c": 1.0
       },
@@ -192,9 +192,9 @@
     },
     "los_angeles": {
       "high": {
-        "n": 34,
-        "mean_delta_c": -4.61,
-        "stdev_delta_c": 2.19,
+        "n": 36,
+        "mean_delta_c": -4.62,
+        "stdev_delta_c": 2.14,
         "unit": "F",
         "bucket_width_c": 1.111
       }
@@ -237,9 +237,9 @@
     },
     "miami": {
       "high": {
-        "n": 23,
-        "mean_delta_c": 1.27,
-        "stdev_delta_c": 0.74,
+        "n": 26,
+        "mean_delta_c": 1.28,
+        "stdev_delta_c": 0.7,
         "unit": "F",
         "bucket_width_c": 1.111
       }
@@ -264,16 +264,16 @@
     },
     "nyc": {
       "high": {
-        "n": 52,
-        "mean_delta_c": -0.18,
-        "stdev_delta_c": 1.9,
+        "n": 56,
+        "mean_delta_c": -0.27,
+        "stdev_delta_c": 1.86,
         "unit": "F",
         "bucket_width_c": 1.111
       },
       "low": {
-        "n": 4,
-        "mean_delta_c": 0.89,
-        "stdev_delta_c": 1.45,
+        "n": 8,
+        "mean_delta_c": 1.16,
+        "stdev_delta_c": 1.44,
         "unit": "F",
         "bucket_width_c": 1.111
       }
@@ -289,16 +289,16 @@
     },
     "paris": {
       "high": {
-        "n": 4,
-        "mean_delta_c": 2.05,
-        "stdev_delta_c": 1.29,
+        "n": 6,
+        "mean_delta_c": 1.78,
+        "stdev_delta_c": 1.3,
         "unit": "C",
         "bucket_width_c": 1.0
       },
       "low": {
-        "n": 4,
-        "mean_delta_c": -0.02,
-        "stdev_delta_c": 0.46,
+        "n": 6,
+        "mean_delta_c": 0.12,
+        "stdev_delta_c": 0.81,
         "unit": "C",
         "bucket_width_c": 1.0
       }
@@ -314,26 +314,26 @@
     },
     "san_francisco": {
       "high": {
-        "n": 2,
-        "mean_delta_c": 0.72,
-        "stdev_delta_c": 0.15,
+        "n": 3,
+        "mean_delta_c": 1.5,
+        "stdev_delta_c": 1.12,
         "unit": "F",
         "bucket_width_c": 1.111
       }
     },
     "sao_paulo": {
       "high": {
-        "n": 3,
-        "mean_delta_c": 1.17,
-        "stdev_delta_c": 0.29,
+        "n": 4,
+        "mean_delta_c": 0.62,
+        "stdev_delta_c": 0.97,
         "unit": "C",
         "bucket_width_c": 1.0
       }
     },
     "seattle": {
       "high": {
-        "n": 46,
-        "mean_delta_c": -0.02,
+        "n": 47,
+        "mean_delta_c": -0.0,
         "stdev_delta_c": 1.28,
         "unit": "F",
         "bucket_width_c": 1.111
@@ -341,36 +341,45 @@
     },
     "seoul": {
       "high": {
-        "n": 9,
-        "mean_delta_c": -1.3,
-        "stdev_delta_c": 1.47,
+        "n": 12,
+        "mean_delta_c": -1.57,
+        "stdev_delta_c": 1.48,
+        "unit": "C",
+        "bucket_width_c": 1.0
+      }
+    },
+    "singapore": {
+      "high": {
+        "n": 1,
+        "mean_delta_c": 0.5,
+        "stdev_delta_c": null,
         "unit": "C",
         "bucket_width_c": 1.0
       }
     },
     "tokyo": {
       "high": {
-        "n": 14,
-        "mean_delta_c": -1.76,
-        "stdev_delta_c": 1.2,
+        "n": 17,
+        "mean_delta_c": -1.52,
+        "stdev_delta_c": 1.24,
         "unit": "C",
         "bucket_width_c": 1.0
       }
     },
     "toronto": {
       "high": {
-        "n": 23,
-        "mean_delta_c": 1.09,
-        "stdev_delta_c": 1.34,
+        "n": 27,
+        "mean_delta_c": 1.01,
+        "stdev_delta_c": 1.27,
         "unit": "C",
         "bucket_width_c": 1.0
       }
     },
     "warsaw": {
       "high": {
-        "n": 2,
-        "mean_delta_c": -0.95,
-        "stdev_delta_c": 1.15,
+        "n": 3,
+        "mean_delta_c": -0.37,
+        "stdev_delta_c": 1.25,
         "unit": "C",
         "bucket_width_c": 1.0
       }
