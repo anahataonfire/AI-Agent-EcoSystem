@@ -5,7 +5,7 @@ Dry-run mode by default. Set --live flag and POLY_PRIVATE_KEY for real trades.
 import os
 import logging
 from dataclasses import dataclass
-from typing import Optional, Literal
+from typing import Any, Dict, Optional, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,99 @@ class OrderResult:
     # "delayed" = queued; "dry_run" for paper. PD-351 M1: filled_amount used to
     # be fabricated as the requested size for ANY accepted GTC.
     status: Optional[str] = None
+    actual_cost: float = 0.0
+    fees: float = 0.0
+    rebates: float = 0.0
+    order_mode: str = "GTC"
+
+
+@dataclass
+class OrderSnapshot:
+    """Normalized authenticated order lifecycle snapshot.
+
+    `matched` is intentionally distinct from `confirmed`: an exchange match
+    may still fail. Adapters for REST or the authenticated user stream can
+    populate this same boundary without coupling persistence to an SDK shape.
+    """
+    order_id: str
+    status: str
+    filled_amount: float = 0.0
+    avg_price: float = 0.0
+    actual_cost: float = 0.0
+    fees: float = 0.0
+    rebates: float = 0.0
+    raw_status: Optional[str] = None
+    event_id: Optional[str] = None
+
+
+def _number(payload: Dict[str, Any], *keys: str, default: float = 0.0) -> float:
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, ""):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                pass
+    return default
+
+
+def normalize_order_snapshot(order_id: str, payload: Dict[str, Any]) -> OrderSnapshot:
+    raw = str(payload.get("status") or payload.get("type") or "UNKNOWN")
+    key = raw.strip().upper().removeprefix("ORDER_STATUS_")
+    aliases = {
+        "LIVE": "LIVE", "OPEN": "LIVE", "DELAYED": "DELAYED",
+        "MATCHED": "MATCHED", "PARTIALLY_FILLED": "PARTIALLY_FILLED",
+        "PARTIAL": "PARTIALLY_FILLED", "CONFIRMED": "CONFIRMED",
+        "PARTIALLY_CONFIRMED": "PARTIALLY_CONFIRMED", "CANCELED": "CANCELED",
+        "CANCELLED": "CANCELED", "FAILED": "FAILED", "REJECTED": "REJECTED",
+        "CANCELED_MARKET_RESOLVED": "CANCELED", "INVALID": "REJECTED",
+    }
+    status = aliases.get(key, "UNKNOWN")
+    filled = _number(payload, "size_matched", "sizeMatched", "filled_amount", "filledAmount")
+    price = _number(payload, "avg_price", "avgPrice", "price")
+    cost = _number(payload, "actual_cost", "actualCost", default=filled * price)
+    return OrderSnapshot(
+        order_id=order_id,
+        status=status,
+        filled_amount=filled,
+        avg_price=price,
+        actual_cost=cost,
+        fees=_number(payload, "fees", "fee"),
+        rebates=_number(payload, "rebates", "rebate"),
+        raw_status=raw,
+    )
+
+
+def normalize_trade_event(order_id: str, payload: Dict[str, Any]) -> OrderSnapshot:
+    """Normalize authenticated user-channel trade lifecycle events.
+
+    MATCHED and MINED are nonterminal. Only CONFIRMED proves a fill; FAILED
+    releases the reservation without creating a position.
+    """
+    raw = str(payload.get("status") or "UNKNOWN").upper()
+    normalized_raw = raw.removeprefix("TRADE_STATUS_")
+    event_id = str(payload.get("id") or payload.get("trade_id") or "").strip()
+    if not event_id:
+        raise ValueError("Authenticated trade event is missing its stable trade id")
+    status = {
+        "MATCHED": "MATCHED",
+        "MINED": "MATCHED",
+        "CONFIRMED": "CONFIRMED",
+        "FAILED": "FAILED",
+    }.get(normalized_raw, "UNKNOWN")
+    filled = _number(payload, "size", "matched_size", "size_matched", "filled_amount")
+    price = _number(payload, "price", "avg_price")
+    return OrderSnapshot(
+        order_id=order_id,
+        status=status,
+        filled_amount=filled,
+        avg_price=price,
+        actual_cost=_number(payload, "actual_cost", default=filled * price),
+        fees=_number(payload, "fees", "fee"),
+        rebates=_number(payload, "rebates", "rebate"),
+        raw_status=raw,
+        event_id=event_id,
+    )
 
 class PolymarketExecutor:
     def __init__(self, dry_run: bool = True):
@@ -92,10 +185,12 @@ class PolymarketExecutor:
             return 0.0
     
     def place_order(self, token_id: str, side: Literal["BUY", "SELL"],
-                    size: float, price: float) -> OrderResult:
+                    size: float, price: float, *, post_only: bool = False) -> OrderResult:
+        mode = "POST_ONLY" if post_only else "GTC"
         if self.dry_run:
             logger.info(f"[DRY RUN] {side} {size:.2f} @ {price:.2f}")
-            return OrderResult(True, "dry_run", size, price, status="dry_run")
+            return OrderResult(True, "dry_run", size, price, status="confirmed",
+                               actual_cost=size * price, order_mode=mode)
 
         # Check VPN/connectivity before attempting trade
         try:
@@ -161,6 +256,7 @@ class PolymarketExecutor:
                 order_args=order_args,
                 options=options,
                 order_type=OrderType.GTC,
+                post_only=post_only,
             )
         except Exception as e:
             logger.error(f"Order failed: {e}")
@@ -182,9 +278,85 @@ class PolymarketExecutor:
         # PD-351 M1 honest fills: a GTC accepted as "live" is RESTING unfilled —
         # reporting filled_amount=size for it booked phantom fills (946/946 orders
         # in the DB said FILLED). Only "matched" means the order traded.
-        status = (result.get("status") or "").lower() if isinstance(result, dict) else ""
-        filled = size if status == "matched" else 0.0
-        return OrderResult(True, order_id, filled, price, status=status or "unknown")
+        snapshot = normalize_order_snapshot(order_id, result if isinstance(result, dict) else {})
+        # Submission responses frequently omit size_matched. Never infer a fill
+        # merely because status is MATCHED; confirmation is a separate event.
+        return OrderResult(
+            True, order_id, snapshot.filled_amount, snapshot.avg_price or price,
+            status=snapshot.status.lower(), actual_cost=snapshot.actual_cost,
+            fees=snapshot.fees, rebates=snapshot.rebates, order_mode=mode,
+        )
+
+    def get_order_snapshot(self, order_id: str) -> OrderSnapshot:
+        if self.dry_run:
+            raise RuntimeError("Paper orders are confirmed at submission")
+        if not self.client:
+            raise RuntimeError("CLOB client not initialized")
+        payload = self.client.get_order(order_id)
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"Unexpected get_order response: {payload!r}")
+        return normalize_order_snapshot(order_id, payload)
+
+    def get_order_trade_events(self, order_id: str, token_id: str,
+                               trades: Optional[list] = None) -> list[OrderSnapshot]:
+        """Return authenticated trade events belonging to one local order.
+
+        The CLOB trade endpoint is filtered by asset, then narrowed to the
+        taker order id or an embedded maker order id. Each event keeps the
+        exchange trade id so persistence can aggregate distinct fills exactly
+        once.
+        """
+        if self.dry_run or not self.client:
+            return []
+        from py_clob_client_v2.clob_types import TradeParams
+        if trades is None:
+            trades = self.client.get_trades(
+                TradeParams(asset_id=token_id), only_first_page=False
+            ) or []
+        snapshots = []
+        for trade in trades:
+            if not isinstance(trade, dict):
+                continue
+            size = price = fee = 0.0
+            matched = False
+            if str(trade.get("taker_order_id") or "") == order_id:
+                matched = True
+                size = _number(trade, "size", "matched_amount")
+                price = _number(trade, "price")
+                rate = _number(trade, "fee_rate_bps")
+                fee = size * (rate / 10_000.0) * price * (1.0 - price)
+            else:
+                for maker in trade.get("maker_orders") or []:
+                    if isinstance(maker, dict) and str(
+                        maker.get("order_id") or maker.get("maker_order_id") or ""
+                    ) == order_id:
+                        matched = True
+                        size = _number(maker, "matched_amount", "size", "size_matched")
+                        price = _number(maker, "price", default=_number(trade, "price"))
+                        fee = 0.0
+                        break
+            if not matched:
+                continue
+            trade_id = trade.get("id") or trade.get("trade_id")
+            if not trade_id:
+                logger.warning("Skipping authenticated trade without stable id for order %s", order_id)
+                continue
+            payload = {
+                "id": f"{trade_id}:{order_id}",
+                "status": trade.get("status"),
+                "size": size,
+                "price": price,
+                "actual_cost": size * price,
+                "fees": fee,
+            }
+            snapshots.append(normalize_trade_event(order_id, payload))
+        return snapshots
+
+    def cancel_order(self, order_id: str) -> Any:
+        if self.dry_run or not self.client:
+            raise RuntimeError("Cannot cancel without a live authenticated client")
+        from py_clob_client_v2 import OrderPayload
+        return self.client.cancel_order(OrderPayload(orderID=order_id))
 
     def buy(self, token_id: str, dollar_amount: float, max_price: float) -> OrderResult:
         shares = dollar_amount / max_price
@@ -215,4 +387,3 @@ if __name__ == "__main__":
     print(f"Success: {result.success}")
     print(f"Order ID: {result.order_id}")
     print(f"Balance: ${ex.get_balance():.2f}")
-

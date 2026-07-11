@@ -18,6 +18,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
+from strategy import calculate_return_metrics
+from identifiers import canonical_event_key
+
 logger = logging.getLogger(__name__)
 
 
@@ -142,7 +145,7 @@ class EdgeHarvestOpportunity:
 
     # Codex R3/R5 tradability — propagated from WeatherMarket; guards api.py /api/trade
     # against orders to markets whose CLOB book is closed.
-    accepting_orders: bool = True
+    accepting_orders: bool = False
 
     # PD-340 v3: settlement-location-basis correction + honest bands (display-only; operator owns sizing)
     raw_bands: int = 0                              # bands on the raw (uncorrected) forecast
@@ -158,6 +161,25 @@ class EdgeHarvestOpportunity:
     # PD-343: open-ended EXTREME bucket on the NO side (≥top for high, ≤bottom for low). That
     # bucket aggregates the whole tail's probability mass; honest-bands can't bound it. Forced NO_ROOM.
     open_bucket: bool = False
+
+    # Event/execution identity and transparent fee-aware economics.
+    market_id: str = ""
+    event_key: str = ""
+    gross_return_pct: float = 0.0
+    # Conditional payoff if the purchased share wins; not probabilistic EV.
+    net_win_return_pct: Optional[float] = None
+    estimated_fee_pct: Optional[float] = None
+    fee_enabled: Optional[bool] = None
+    fee_rate_bps: Optional[int] = None
+    fee_source: str = "UNKNOWN"
+    fee_known: bool = False
+    fee_model: str = "unknown-fee-metadata"
+
+    # Authoritative observation hard bound. UNKNOWN never changes eligibility.
+    nowcast_status: str = "UNKNOWN"
+    nowcast_station: Optional[str] = None
+    observed_extreme: Optional[float] = None
+    nowcast_hard_bound: bool = False
 
     @property
     def bucket(self) -> str:
@@ -341,6 +363,58 @@ class EdgeHarvestScanner:
         out["recommendation_status"] = "ROOM" if (margin is not None and margin > 0 and room_ratio >= self.ROOM_STDEV_THRESHOLD) else "NO_ROOM"
         return out
 
+    def _apply_yes_basis(self, city, mtype, unit, forecast_temp, bucket_low, bucket_high, raw_bands):
+        """Apply the same settlement-location correction to YES opportunities.
+
+        YES room means the corrected forecast remains *inside* the bucket by
+        enough of the city's observed settlement volatility. This mirrors the
+        NO calculation instead of silently omitting basis fields on YES rows.
+        """
+        out = self._apply_basis(city, mtype, unit, forecast_temp, bucket_low, bucket_high, raw_bands)
+        if out["basis_status"] != "corrected":
+            return out
+        corrected = out["corrected_forecast_temp"]
+        lo = None if bucket_low in (None, float("-inf")) else bucket_low
+        hi = None if bucket_high in (None, float("inf")) else bucket_high
+        distances = []
+        if lo is not None:
+            distances.append(corrected - lo)
+        if hi is not None:
+            distances.append(hi - corrected)
+        inside = all(d >= 0 for d in distances) if distances else False
+        div = 1.8 if unit == "F" else 1.0
+        margin_c = min(distances) / div if inside and distances else None
+        out["margin_c"] = round(margin_c, 2) if margin_c is not None else None
+        width = self._bucket_width(unit)
+        out["corrected_bands"] = int(min(distances) / width) if inside and distances else 0
+        prof = (getattr(self, "_basis_cache", {}) or {}).get("profiles", {}).get(city, {}).get(mtype, {})
+        vol = max(prof.get("stdev_delta_c") or 1.0, 0.3)
+        out["recommendation_status"] = (
+            "ROOM" if margin_c is not None and margin_c / vol >= self.ROOM_STDEV_THRESHOLD else "NO_ROOM"
+        )
+        return out
+
+    @staticmethod
+    def _nowcast_bound(nowcast, mtype, unit, bucket_low, bucket_high):
+        """Return (status, observed extreme, station, hard-elimination)."""
+        if not nowcast or not getattr(nowcast, "available", False):
+            return "UNKNOWN", None, getattr(nowcast, "station_id", None), False
+        observed_f = (
+            getattr(nowcast, "observed_low_f", None)
+            if mtype == "low" else getattr(nowcast, "observed_high_f", None)
+        )
+        if observed_f is None:
+            return "UNKNOWN", None, getattr(nowcast, "station_id", None), False
+        observed = (observed_f - 32) * 5 / 9 if unit == "C" else observed_f
+        lo = None if bucket_low in (None, float("-inf")) else bucket_low
+        hi = None if bucket_high in (None, float("inf")) else bucket_high
+        # The day's high can only rise; the day's low can only fall.
+        eliminated = ((mtype == "high" and hi is not None and observed > hi) or
+                      (mtype == "low" and lo is not None and observed < lo))
+        if eliminated:
+            return "BUCKET_ELIMINATED", observed, nowcast.station_id, True
+        return "BOUND_ACTIVE", observed, nowcast.station_id, False
+
     def calculate_model_spread(
         self,
         ecmwf: Optional[float],
@@ -358,6 +432,7 @@ class EdgeHarvestScanner:
         city: str,
         target_date: str,
         forecast,  # DailyForecast
+        market_type: str = "high",
     ) -> List[FrontWarning]:
         """
         Detect conditions that increase forecast uncertainty.
@@ -368,8 +443,9 @@ class EdgeHarvestScanner:
         warnings = []
 
         # Check model spread (ECMWF vs GFS) -- always in °F
-        ecmwf = getattr(forecast, 'ecmwf_high', None)
-        gfs = getattr(forecast, 'gfs_high', None)
+        suffix = "low" if market_type == "low" else "high"
+        ecmwf = getattr(forecast, f'ecmwf_{suffix}', None)
+        gfs = getattr(forecast, f'gfs_{suffix}', None)
         if ecmwf is not None and gfs is not None:
             spread = abs(ecmwf - gfs)
             if spread >= 8:
@@ -630,6 +706,7 @@ class EdgeHarvestScanner:
         self,
         markets: List,  # WeatherMarket objects from scanner
         forecasts: dict,  # {(city, date): DailyForecast}
+        nowcasts: Optional[dict] = None,  # {(city, date): StationNowcast}
     ) -> List[EdgeHarvestOpportunity]:
         """
         Find edge harvest opportunities from market data.
@@ -637,6 +714,7 @@ class EdgeHarvestScanner:
         Returns list of opportunities sorted by potential return.
         """
         opportunities = []
+        nowcasts = nowcasts or {}
         self._basis_cache = _read_basis()  # PD-340 v3: per-(city,market_type) location-basis profile (fail-honest, reloaded each scan)
 
         # PD-350: batch-prefetch every candidate order book up front (one POST
@@ -704,12 +782,21 @@ class EdgeHarvestScanner:
             if no_price is None or no_price <= 0:
                 no_price = 1.0 - (market.yes_price or 0)
 
-            ecmwf = getattr(forecast, 'ecmwf_high', None)
-            gfs = getattr(forecast, 'gfs_high', None)
-            nws = getattr(forecast, 'nws_high', None)
+            model_suffix = 'low' if mtype == 'low' else 'high'
+            ecmwf = getattr(forecast, f'ecmwf_{model_suffix}', None)
+            gfs = getattr(forecast, f'gfs_{model_suffix}', None)
+            nws = getattr(forecast, f'nws_{model_suffix}', None)
             model_spread = self.calculate_model_spread(ecmwf, gfs, nws)
             front_warnings = self.detect_front_warnings(
-                market.city_key, market.target_date, forecast
+                market.city_key, market.target_date, forecast, market_type=mtype,
+            )
+            nowcast_status, observed_extreme, nowcast_station, hard_bound = self._nowcast_bound(
+                nowcasts.get((market.city_key, market.target_date, mtype), nowcasts.get(key)),
+                mtype, unit, market.bucket_low, market.bucket_high
+            )
+            event_key = canonical_event_key(
+                market.city_key, market.target_date, mtype,
+                event_id=getattr(market, "event_id", None),
             )
 
             if market.bucket_low is None or market.bucket_low == float('-inf'):
@@ -771,9 +858,23 @@ class EdgeHarvestScanner:
                     hours_remaining=getattr(market, 'hours_remaining', 0),
                     recommended_side="NO",
                     market_type=mtype,
-                    accepting_orders=bool(getattr(market, 'accepting_orders', True)),
+                    accepting_orders=bool(getattr(market, 'accepting_orders', False)),
+                    market_id=str(getattr(market, 'market_id', '')),
+                    event_key=event_key,
+                    nowcast_status=nowcast_status,
+                    nowcast_station=nowcast_station,
+                    observed_extreme=round(observed_extreme, 1) if observed_extreme is not None else None,
+                    nowcast_hard_bound=hard_bound,
                     **_basis,  # PD-340 v3: raw/corrected bands, margin, recommendation_status, basis_status, confidence
                 )
+                if hard_bound:
+                    no_opp.risk_factors.append(
+                        f"Positive hard bound: authoritative {nowcast_station} observation eliminated this bucket"
+                    )
+                    no_opp.risk_score = max(1, no_opp.risk_score - 2)
+                    no_opp.risk_tier = "LOW" if no_opp.risk_score <= 3 else (
+                        "MEDIUM" if no_opp.risk_score <= 6 else "HIGH"
+                    )
                 no_token_id = market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None
                 if no_token_id:
                     ob_data = self._fetch_order_book(no_token_id)
@@ -784,6 +885,27 @@ class EdgeHarvestScanner:
                     no_opp.spread = ob_data["spread"]
                     if no_opp.best_ask_price > 0:
                         no_opp.potential_return_pct = ((1.0 - no_opp.best_ask_price) / no_opp.best_ask_price) * 100
+                no_entry_price = no_opp.best_ask_price or no_opp.no_price
+                no_metrics = calculate_return_metrics(
+                    no_entry_price,
+                    fee_enabled=getattr(market, 'fee_enabled', None),
+                    fee_rate_bps=getattr(market, 'fee_rate_bps', None),
+                    liquidity_role="taker",
+                )
+                no_opp.gross_return_pct = round(no_metrics.gross_return_pct, 4)
+                no_opp.net_win_return_pct = (
+                    round(no_metrics.net_win_return_pct, 4)
+                    if no_metrics.net_win_return_pct is not None else None
+                )
+                no_opp.estimated_fee_pct = (
+                    round(no_metrics.estimated_fee_pct, 4)
+                    if no_metrics.estimated_fee_pct is not None else None
+                )
+                no_opp.fee_enabled = no_metrics.fee_enabled
+                no_opp.fee_rate_bps = no_metrics.fee_rate_bps
+                no_opp.fee_known = no_metrics.fee_known
+                no_opp.fee_model = no_metrics.fee_model
+                no_opp.fee_source = getattr(market, 'fee_source', 'UNKNOWN')
                 opportunities.append(no_opp)
 
             # --- YES-side evaluation (PD-195): forecast inside band, high YES price ---
@@ -818,6 +940,14 @@ class EdgeHarvestScanner:
                             price=yes_price, side="YES",
                         )
                         y_thresh = "CONSERVATIVE" if yes_price >= self.SAFE_YES_PRICE else "AGGRESSIVE"
+                        _yes_basis = self._apply_yes_basis(
+                            market.city_key, mtype, unit, forecast_temp,
+                            market.bucket_low, market.bucket_high, margin_bands,
+                        )
+                        if hard_bound:
+                            # Observed daily extrema are monotonic. Once outside
+                            # this bucket, a YES outcome is impossible.
+                            continue
                         yes_opp = EdgeHarvestOpportunity(
                             city=market.city_key,
                             target_date=market.target_date,
@@ -846,7 +976,14 @@ class EdgeHarvestScanner:
                             hours_remaining=getattr(market, 'hours_remaining', 0),
                             recommended_side="YES",
                             market_type=mtype,
-                            accepting_orders=bool(getattr(market, 'accepting_orders', True)),
+                            accepting_orders=bool(getattr(market, 'accepting_orders', False)),
+                            market_id=str(getattr(market, 'market_id', '')),
+                            event_key=event_key,
+                            nowcast_status=nowcast_status,
+                            nowcast_station=nowcast_station,
+                            observed_extreme=round(observed_extreme, 1) if observed_extreme is not None else None,
+                            nowcast_hard_bound=False,
+                            **_yes_basis,
                         )
                         yes_token_id = market.clob_token_ids[0] if len(market.clob_token_ids) > 0 else None
                         if yes_token_id:
@@ -858,10 +995,35 @@ class EdgeHarvestScanner:
                             yes_opp.spread = ob_data["spread"]
                             if yes_opp.best_ask_price > 0:
                                 yes_opp.potential_return_pct = ((1.0 - yes_opp.best_ask_price) / yes_opp.best_ask_price) * 100
+                        yes_entry_price = yes_opp.best_ask_price or yes_opp.yes_price
+                        yes_metrics = calculate_return_metrics(
+                            yes_entry_price,
+                            fee_enabled=getattr(market, 'fee_enabled', None),
+                            fee_rate_bps=getattr(market, 'fee_rate_bps', None),
+                            liquidity_role="taker",
+                        )
+                        yes_opp.gross_return_pct = round(yes_metrics.gross_return_pct, 4)
+                        yes_opp.net_win_return_pct = (
+                            round(yes_metrics.net_win_return_pct, 4)
+                            if yes_metrics.net_win_return_pct is not None else None
+                        )
+                        yes_opp.estimated_fee_pct = (
+                            round(yes_metrics.estimated_fee_pct, 4)
+                            if yes_metrics.estimated_fee_pct is not None else None
+                        )
+                        yes_opp.fee_enabled = yes_metrics.fee_enabled
+                        yes_opp.fee_rate_bps = yes_metrics.fee_rate_bps
+                        yes_opp.fee_known = yes_metrics.fee_known
+                        yes_opp.fee_model = yes_metrics.fee_model
+                        yes_opp.fee_source = getattr(market, 'fee_source', 'UNKNOWN')
                         opportunities.append(yes_opp)
         
         # Sort by potential return (highest first)
-        opportunities.sort(key=lambda x: x.potential_return_pct, reverse=True)
+        opportunities.sort(
+            key=lambda x: x.net_win_return_pct
+            if x.net_win_return_pct is not None else float('-inf'),
+            reverse=True,
+        )
         
         return opportunities
 

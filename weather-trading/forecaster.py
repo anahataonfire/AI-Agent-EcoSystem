@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 from urllib.parse import urlparse
@@ -47,12 +48,34 @@ class DailyForecast:
     ecmwf_high: Optional[float] = None
     gfs_high: Optional[float] = None
     nws_high: Optional[float] = None
+    ecmwf_low: Optional[float] = None
+    gfs_low: Optional[float] = None
+    nws_low: Optional[float] = None
 
     # PD-325 follow-up: track provenance of the low value so LOW-market
     # consumers can skip opps generated from the synthetic fallback
     # (avg_high - 15), which is wildly off for many climates and was the
     # root cause of pos_707's bad LOW opp.
     low_source: str = "OPEN_METEO"  # "OPEN_METEO" or "SYNTHETIC"
+
+
+@dataclass(frozen=True)
+class StationNowcast:
+    """Observed extrema from the explicitly configured settlement station.
+
+    `available=False` is an intentional, fail-honest result: callers must not
+    infer a hard bound from a nearby or guessed station.
+    """
+    city: str
+    date: str
+    station_id: Optional[str]
+    source: str
+    available: bool
+    observed_high_f: Optional[float] = None
+    observed_low_f: Optional[float] = None
+    observation_count: int = 0
+    fetched_at: Optional[datetime] = None
+    reason: Optional[str] = None
 
 
 class WeatherForecaster:
@@ -194,6 +217,77 @@ class WeatherForecaster:
         
         logger.info(f"Fetched {len(forecasts)} hourly forecasts from NWS for {city_key}")
         return forecasts
+
+    def fetch_station_nowcast(
+        self, city_key: str, target_date: str, *,
+        station_id: Optional[str] = None,
+        resolution_source_url: Optional[str] = None,
+    ) -> StationNowcast:
+        """Fetch observed extrema from an explicitly configured NWS station.
+
+        Only cities whose declared resolution source is NWS and that have an
+        explicit ``settlement_station`` are eligible. All other cases return an
+        unavailable result; the method never substitutes Open-Meteo or a nearby
+        airport because that would turn a proxy observation into a false hard
+        bound.
+        """
+        city = WEATHER_CITIES.get(city_key)
+        now = datetime.now(timezone.utc)
+        if not city:
+            return StationNowcast(city_key, target_date, None, "NONE", False,
+                                  fetched_at=now, reason="unknown-city")
+        # A city-level "NWS" label is not sufficient: current Polymarket US
+        # weather rules often settle from Wunderground even when the same ICAO
+        # station also reports to NWS. Require exact market-rule provenance.
+        station = station_id
+        if not station or not resolution_source_url or "weather.gov" not in resolution_source_url:
+            return StationNowcast(city_key, target_date, station, "NONE", False,
+                                  fetched_at=now, reason="no-authoritative-nws-station")
+        try:
+            local_tz = ZoneInfo(city["timezone"])
+            local_day = datetime.strptime(target_date, "%Y-%m-%d").replace(tzinfo=local_tz)
+        except (ValueError, KeyError):
+            return StationNowcast(city_key, target_date, station, "NWS_OBSERVATIONS", False,
+                                  fetched_at=now, reason="invalid-date-or-timezone")
+
+        start = local_day.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        end_dt = min(local_day + timedelta(days=1), now.astimezone(local_tz)).astimezone(timezone.utc)
+        if end_dt <= local_day.astimezone(timezone.utc):
+            return StationNowcast(city_key, target_date, station, "NWS_OBSERVATIONS", False,
+                                  fetched_at=now, reason="target-day-not-started")
+        end = end_dt.isoformat().replace("+00:00", "Z")
+        url = (
+            f"{API_CONFIG['nws_base_url']}/stations/{station}/observations"
+            f"?start={start}&end={end}&limit=500"
+        )
+        data = self._make_request(url)
+        if not data:
+            return StationNowcast(city_key, target_date, station, "NWS_OBSERVATIONS", False,
+                                  fetched_at=now, reason="observation-request-failed")
+
+        temps_f = []
+        for feature in data.get("features", []):
+            props = feature.get("properties", {}) if isinstance(feature, dict) else {}
+            value_c = (props.get("temperature") or {}).get("value")
+            timestamp = props.get("timestamp")
+            if value_c is None or not timestamp:
+                continue
+            try:
+                observed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                if observed.astimezone(local_tz).strftime("%Y-%m-%d") != target_date:
+                    continue
+                temps_f.append(celsius_to_fahrenheit(float(value_c)))
+            except (ValueError, TypeError):
+                continue
+        if not temps_f:
+            return StationNowcast(city_key, target_date, station, "NWS_OBSERVATIONS", False,
+                                  fetched_at=now, reason="no-valid-observations")
+        return StationNowcast(
+            city=city_key, date=target_date, station_id=station,
+            source="NWS_OBSERVATIONS", available=True,
+            observed_high_f=max(temps_f), observed_low_f=min(temps_f),
+            observation_count=len(temps_f), fetched_at=now,
+        )
     
     def fetch_open_meteo_forecast(
         self, 
@@ -315,6 +409,8 @@ class WeatherForecaster:
         lows = daily.get("temperature_2m_min_best_match") or daily.get("temperature_2m_min") or []
         ec_highs = daily.get("temperature_2m_max_ecmwf_ifs025") or []
         gfs_highs = daily.get("temperature_2m_max_gfs_seamless") or []
+        ec_lows = daily.get("temperature_2m_min_ecmwf_ifs025") or []
+        gfs_lows = daily.get("temperature_2m_min_gfs_seamless") or []
 
         results = {}
         for i, date in enumerate(dates):
@@ -326,6 +422,8 @@ class WeatherForecaster:
                 # SYNTHETIC and suppresses real LOW opps).
                 ec_c = ec_highs[i] if i < len(ec_highs) else None
                 gfs_c = gfs_highs[i] if i < len(gfs_highs) else None
+                ec_low_c = ec_lows[i] if i < len(ec_lows) else None
+                gfs_low_c = gfs_lows[i] if i < len(gfs_lows) else None
                 results[date] = {
                     "high_f": celsius_to_fahrenheit(high_c),
                     "low_f": celsius_to_fahrenheit(low_c) if low_c is not None else None,
@@ -336,6 +434,8 @@ class WeatherForecaster:
                     # forecast unchanged by PD-351).
                     "ecmwf_high_f": celsius_to_fahrenheit(ec_c) if ec_c is not None else None,
                     "gfs_high_f": celsius_to_fahrenheit(gfs_c) if gfs_c is not None else None,
+                    "ecmwf_low_f": celsius_to_fahrenheit(ec_low_c) if ec_low_c is not None else None,
+                    "gfs_low_f": celsius_to_fahrenheit(gfs_low_c) if gfs_low_c is not None else None,
                 }
         
         if results:
@@ -368,6 +468,8 @@ class WeatherForecaster:
         # shift when models are added.
         ecmwf_high_f = None
         gfs_high_f = None
+        ecmwf_low_f = None
+        gfs_low_f = None
 
         # PRIMARY: Use Open-Meteo DAILY endpoint (most accurate for daily max/min)
         om_daily = self.fetch_open_meteo_daily(city_key)
@@ -376,6 +478,8 @@ class WeatherForecaster:
             highs["OPEN_METEO"] = day_data["high_f"]
             ecmwf_high_f = day_data.get("ecmwf_high_f")
             gfs_high_f = day_data.get("gfs_high_f")
+            ecmwf_low_f = day_data.get("ecmwf_low_f")
+            gfs_low_f = day_data.get("gfs_low_f")
             # Codex C fix: explicit None-check — `low_f == 0` (32°F low) is
             # real data, not absence. Falsy-skipping caused PD-325 follow-up
             # to incorrectly mark such forecasts as SYNTHETIC.
@@ -393,6 +497,7 @@ class WeatherForecaster:
             # Only use NWS if we have full day coverage (at least 18 hours)
             if len(day_temps) >= 18:
                 highs["NWS"] = max(day_temps)
+                lows["NWS"] = min(day_temps)
                 logger.info(f"NWS hourly: {max(day_temps):.1f}F high for {city_key} {target_date}")
         
         if not highs:
@@ -454,6 +559,9 @@ class WeatherForecaster:
             ecmwf_high=ecmwf_high_f,
             gfs_high=gfs_high_f,
             nws_high=highs.get("NWS"),
+            ecmwf_low=ecmwf_low_f,
+            gfs_low=gfs_low_f,
+            nws_low=lows.get("NWS"),
             low_source=low_source,
         )
         

@@ -15,6 +15,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
+from urllib.parse import parse_qs, urlparse
 
 from config import WEATHER_CITIES, API_CONFIG, ACTIVE_CITIES
 
@@ -40,7 +41,16 @@ class WeatherMarket:
     market_url: str
     clob_token_ids: tuple = (None, None)  # (yes_token_id, no_token_id)
     market_type: str = "high"  # "high" or "low" — which daily extreme the market resolves on (PD-321 R3)
-    accepting_orders: bool = True  # Codex R3/R5 tradability — guards executor against orders to closed markets
+    accepting_orders: bool = False  # Missing tradability metadata fails closed.
+    # Gamma/CLOB fee metadata. None means unavailable, never "assume zero".
+    fee_enabled: Optional[bool] = None
+    fee_rate_bps: Optional[int] = None
+    fee_source: str = "UNKNOWN"
+    condition_id: str = ""
+    resolution_source_url: str = ""
+    settlement_station: Optional[str] = None
+    settlement_station_authority: str = "UNKNOWN"
+    event_id: str = ""
 
     @property
     def hours_remaining(self) -> float:
@@ -63,6 +73,64 @@ def _parse_clob_token_ids(market: Dict) -> tuple:
     except:
         pass
     return (None, None)
+
+
+def _parse_fee_metadata(
+    market: Dict, event: Optional[Dict] = None
+) -> Tuple[Optional[bool], Optional[int], str]:
+    """Parse fee metadata without turning an absent field into a zero fee."""
+    event = event or {}
+    raw_enabled = market.get("feesEnabled", market.get("feeEnabled", event.get("feesEnabled")))
+    if isinstance(raw_enabled, bool):
+        enabled = raw_enabled
+    elif isinstance(raw_enabled, str) and raw_enabled.lower() in {"true", "false"}:
+        enabled = raw_enabled.lower() == "true"
+    else:
+        enabled = None
+    raw_rate = market.get("feeRateBps", market.get("baseFee", event.get("feeRateBps")))
+    try:
+        numeric_rate = float(raw_rate) if raw_rate is not None else None
+        # CLOB V2 market info expresses r as a decimal (0.05); legacy/Gamma
+        # feeRateBps is integer bps (500). Normalize both to bps.
+        rate = (round(numeric_rate * 10_000) if numeric_rate is not None and numeric_rate <= 1
+                else int(numeric_rate) if numeric_rate is not None else None)
+    except (ValueError, TypeError):
+        rate = None
+    if enabled is False:
+        rate = 0
+        source = "GAMMA_KNOWN_ZERO"
+    elif rate is not None:
+        source = "GAMMA_MARKET_RATE"
+    elif enabled is True:
+        # Official current Weather category taker parameter. Preserve source so
+        # downstream can distinguish this category default from market-specific
+        # CLOB metadata. Operator policy may override the rate per run.
+        rate = 500
+        source = "WEATHER_CATEGORY_DEFAULT"
+    else:
+        source = "UNKNOWN"
+    return enabled, rate, source
+
+
+def _parse_resolution_station(market: Dict, event: Optional[Dict] = None):
+    """Return exact station only with source provenance from market rules."""
+    event = event or {}
+    url = str(market.get("resolutionSource") or event.get("resolutionSource") or "")
+    if not url:
+        # Some NOAA markets put the URL only in the description.
+        description = str(market.get("description") or event.get("description") or "")
+        match = re.search(r"https://www\.weather\.gov/wrh/timeseries\?site=([A-Z0-9]+)", description)
+        if match:
+            url = match.group(0)
+    station = None
+    authority = "UNKNOWN"
+    if "weather.gov" in url:
+        station = (parse_qs(urlparse(url).query).get("site") or [None])[0]
+        authority = "NWS_OBSERVATIONS" if station else "UNKNOWN"
+    elif "wunderground.com/history/daily" in url:
+        station = urlparse(url).path.rstrip("/").split("/")[-1] or None
+        authority = "WUNDERGROUND"
+    return url, station, authority
 
 
 class WeatherMarketScanner:
@@ -535,6 +603,8 @@ class WeatherMarketScanner:
                         no_price = 1.0 - yes_price
 
                     city_info = WEATHER_CITIES.get(city_key, {})
+                    fee_enabled, fee_rate_bps, fee_source = _parse_fee_metadata(market, event)
+                    resolution_url, settlement_station, station_authority = _parse_resolution_station(market, event)
 
                     wm = WeatherMarket(
                         market_id=market.get('id', ''),
@@ -552,11 +622,19 @@ class WeatherMarketScanner:
                         end_time=end_time,
                         market_url=f"https://polymarket.com/event/{slug}",
                         clob_token_ids=_parse_clob_token_ids(market),
-                        accepting_orders=bool(market.get('acceptingOrders', True)),
+                        accepting_orders=bool(market.get('acceptingOrders', False)),
                         # market_type derived from the SLUG (canonical source), not
                         # the question — defends against bucket-only question text
                         # (PD-321 R4 Codex round 2 finding).
                         market_type=("low" if "lowest" in slug.lower() else "high"),
+                        fee_enabled=fee_enabled,
+                        fee_rate_bps=fee_rate_bps,
+                        fee_source=fee_source,
+                        condition_id=str(market.get("conditionId", "") or ""),
+                        resolution_source_url=resolution_url,
+                        settlement_station=settlement_station,
+                        settlement_station_authority=station_authority,
+                        event_id=str(event.get("id", "") or ""),
                     )
 
                     markets.append(wm)
@@ -703,6 +781,8 @@ class WeatherMarketScanner:
                         no_price = 1.0 - yes_price
 
                     city_info = WEATHER_CITIES.get(city_key, {})
+                    fee_enabled, fee_rate_bps, fee_source = _parse_fee_metadata(market, event)
+                    resolution_url, settlement_station, station_authority = _parse_resolution_station(market, event)
 
                     wm = WeatherMarket(
                         market_id=market.get("id", ""),
@@ -721,7 +801,15 @@ class WeatherMarketScanner:
                         market_url=f"https://polymarket.com/event/{event_slug}",
                         clob_token_ids=_parse_clob_token_ids(market),
                         market_type=market_type,
-                        accepting_orders=bool(market.get("acceptingOrders", True)),
+                        accepting_orders=bool(market.get("acceptingOrders", False)),
+                        fee_enabled=fee_enabled,
+                        fee_rate_bps=fee_rate_bps,
+                        fee_source=fee_source,
+                        condition_id=str(market.get("conditionId", "") or ""),
+                        resolution_source_url=resolution_url,
+                        settlement_station=settlement_station,
+                        settlement_station_authority=station_authority,
+                        event_id=str(event.get("id", "") or ""),
                     )
                     markets.append(wm)
                 except (ValueError, KeyError, TypeError) as e:

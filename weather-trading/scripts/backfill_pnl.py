@@ -89,14 +89,30 @@ def canon_bucket(bucket):
 def market_type_from_opp(opp_id):
     return "low" if "_low_" in (opp_id or "") else "high"
 
+def select_confirmed_unresolved(con):
+    """Only returns positions backed by an explicitly confirmed fill."""
+    return con.execute(
+        """SELECT p.id, p.opportunity_id, p.city, p.bucket, p.target_date, p.side,
+                  p.entry_price, p.shares, p.size,
+                  COALESCE(p.actual_cost, o.actual_cost, p.size) AS actual_cost,
+                  COALESCE(p.fees, o.fees, 0) AS fees,
+                  COALESCE(p.rebates, o.rebates, 0) AS rebates
+           FROM positions p JOIN orders o ON o.id = p.order_id
+           WHERE p.pnl IS NULL AND o.confirmed_at IS NOT NULL
+             AND o.filled_amount > 0"""
+    ).fetchall()
+
+def calculate_pnl(row, win):
+    cost = float(row["actual_cost"] or 0)
+    fees = float(row["fees"] or 0)
+    rebates = float(row["rebates"] or 0)
+    return round((float(row["shares"] or 0) if win else 0) - cost - fees + rebates, 4)
+
 def main():
     write = "--write" in sys.argv
     con = sqlite3.connect(DB)
     con.row_factory = sqlite3.Row
-    rows = con.execute(
-        "SELECT id, opportunity_id, city, bucket, target_date, side, "
-        "entry_price, shares, size FROM positions WHERE pnl IS NULL"
-    ).fetchall()
+    rows = select_confirmed_unresolved(con)
 
     cache = {}
     stats = {"fetch_errors": []}
@@ -107,7 +123,7 @@ def main():
     unmatched_samples, win_samples, loss_samples = [], [], []
 
     uniq_events = {(r["city"], r["target_date"], market_type_from_opp(r["opportunity_id"])) for r in rows}
-    print(f"Positions with NULL pnl: {len(rows)}  |  unique events to fetch: {len(uniq_events)}")
+    print(f"Confirmed-fill positions with NULL pnl: {len(rows)}  |  unique events to fetch: {len(uniq_events)}")
     print("Fetching gamma-api resolutions (cached per event)...\n")
 
     done = 0
@@ -156,8 +172,7 @@ def main():
 
         side = (r["side"] or "").upper()
         win = (yes_p == 1) if side == "YES" else (no_p == 1)
-        shares, size = float(r["shares"] or 0), float(r["size"] or 0)
-        pnl = round(shares - size, 4) if win else round(-size, 4)
+        pnl = calculate_pnl(r, win)
         status = "WON" if win else "LOST"
         results.append((r["id"], status, pnl))
         scored += 1
@@ -199,8 +214,9 @@ def main():
         cur = con.cursor()
         for pid, status, pnl in results:
             cur.execute(
-                "UPDATE positions SET pnl=?, status=?, closed_at=COALESCE(closed_at,?) WHERE id=?",
-                (pnl, status, now, pid),
+                "UPDATE positions SET pnl=?, status=?, closed_at=COALESCE(closed_at,?), "
+                "resolved_outcome=?, resolution_source='gamma_backfill' WHERE id=?",
+                (pnl, status, now, status, pid),
             )
         con.commit()
         print(f"  WROTE {len(results)} rows (pnl + status). Backup at {bak}")

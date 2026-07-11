@@ -53,6 +53,20 @@ export interface EdgeHarvestOpportunity {
     yesPrice: number;
     noPrice: number;
     potentialReturnPct: number;
+    grossReturnPct?: number;
+    netWinReturnPct?: number | null;
+    estimatedFeePct?: number | null;
+    feeEnabled?: boolean | null;
+    feeRateBps?: number | null;
+    feeSource?: string;
+    feeKnown?: boolean;
+    feeModel?: string;
+    marketId?: string;
+    eventKey?: string;
+    nowcastStatus?: 'UNKNOWN' | 'BOUND_ACTIVE' | 'BUCKET_ELIMINATED';
+    nowcastStation?: string | null;
+    observedExtreme?: number | null;
+    nowcastHardBound?: boolean;
     riskTier: 'LOW' | 'MEDIUM' | 'HIGH';
     riskScore: number;
     riskFactors: string[];
@@ -96,6 +110,11 @@ export interface Order {
     sizeMatched: number;
     sizeRemaining: number;
     status: string;
+    orderMode?: 'GTC' | 'POST_ONLY';
+    reservedDollars?: number;
+    actualCost?: number;
+    fees?: number;
+    rebates?: number;
     createdAt: string;
     source: 'LIVE' | 'LOCAL';
 }
@@ -113,7 +132,14 @@ export interface Position {
     shares: number;
     unrealizedPnl: number;
     pnl: number | null;
-    status: 'OPEN' | 'WON' | 'LOST' | 'EXPIRED' | 'MANUAL';
+    status: 'OPEN' | 'RESOLUTION_PENDING' | 'WON' | 'LOST' | 'EXPIRED' | 'MANUAL' | 'UNCONFIRMED_LEGACY';
+    actualCost?: number | null;
+    fees?: number;
+    rebates?: number;
+    resolvedOutcome?: string | null;
+    resolutionSource?: string | null;
+    legacyStatus?: string | null;
+    fillVerified?: boolean;
     hoursRemaining: number;
     openedAt: string;
     closedAt: string | null;
@@ -122,6 +148,7 @@ export interface Position {
 export interface Stats {
     bankroll: number;
     deployed: number;
+    reserved: number;
     available: number;
     totalPnl: number;
     winCount: number;
@@ -129,11 +156,13 @@ export interface Stats {
     winRate: number | null;
     openPositions: number;
     totalTrades: number;
+    legacyTrades: number;
 }
 
 export interface Status {
     bankroll: number;
     deployed: number;
+    reserved: number;
     available: number;
     isLive: boolean;
     lastScan: string | null;
@@ -141,6 +170,21 @@ export interface Status {
     // Ground truth from the executor itself; diverges from isLive only when a
     // mode switch failed — absent on older backends.
     executorLive?: boolean;
+    maxOpportunityExposureUsd: number;
+    maxEventExposureUsd: number;
+    defaultOrderMode: 'GTC' | 'POST_ONLY';
+    maxScanAgeMin: number;
+    requoteTolerance: number;
+}
+
+export interface RuntimeSettings {
+    bankroll: number;
+    isLive: boolean;
+    maxOpportunityExposureUsd: number;
+    maxEventExposureUsd: number;
+    defaultOrderMode: 'GTC' | 'POST_ONLY';
+    maxScanAgeMin: number;
+    requoteTolerance: number;
 }
 
 export const weatherApi = {
@@ -160,17 +204,22 @@ export const weatherApi = {
         return res.data;
     },
 
-    executeTrade: async (opportunityId: string, side: string, size?: number, override?: boolean): Promise<{
+    executeTrade: async (opportunityId: string, side: string, size?: number, override?: boolean, orderMode?: 'GTC' | 'POST_ONLY'): Promise<{
         success: boolean;
         position?: Position;
         error?: string;
         persistenceError?: string;
+        order?: Order | null;
         executionResult?: {
             order_id?: string;
             status?: string;
             filled_amount?: number;
             avg_price?: number;
             price?: number;
+            actual_cost?: number;
+            fees?: number;
+            rebates?: number;
+            order_mode?: 'GTC' | 'POST_ONLY';
         };
     }> => {
         const res = await api.post('/api/trade', {
@@ -178,6 +227,7 @@ export const weatherApi = {
             side,
             size,
             ...(override ? { override: true } : {}),
+            ...(orderMode ? { order_mode: orderMode } : {}),
         }, { timeout: 30000 });
         return res.data;
     },
@@ -197,10 +247,15 @@ export const weatherApi = {
         return res.data;
     },
 
-    updateSettings: async (settings: { bankroll?: number; isLive?: boolean }): Promise<{ success: boolean; bankroll: number; isLive: boolean }> => {
+    updateSettings: async (settings: RuntimeSettings): Promise<{ success: boolean } & RuntimeSettings> => {
         const res = await api.post('/api/settings', {
             bankroll: settings.bankroll,
             is_live: settings.isLive,
+            max_opportunity_exposure_usd: settings.maxOpportunityExposureUsd,
+            max_event_exposure_usd: settings.maxEventExposureUsd,
+            default_order_mode: settings.defaultOrderMode,
+            max_scan_age_min: settings.maxScanAgeMin,
+            requote_tolerance: settings.requoteTolerance,
         });
         return res.data;
     },
@@ -229,6 +284,11 @@ export const weatherApi = {
 
     cancelOrder: async (orderId: string): Promise<{ success: boolean }> => {
         const res = await api.post(`/api/orders/${orderId}/cancel`);
+        return res.data;
+    },
+
+    reconcileOrder: async (orderId: string): Promise<{ success: boolean; order: Record<string, unknown> }> => {
+        const res = await api.post(`/api/orders/${orderId}/reconcile`);
         return res.data;
     },
 };

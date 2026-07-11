@@ -282,13 +282,15 @@ POSITION_CONFIG = {
 # Operator will re-engage auto-execution on observed live performance, not backtest.
 EXECUTION_CONFIG = {
     "short_side_execution_enabled": True,
+    # Operator-overridable default. POST_ONLY targets maker status and may rest;
+    # GTC remains the compatibility default.
+    "default_order_mode": "GTC",
 }
 
-# PD-351 server-side trade gates. Grounded in the realized book (736 settled,
-# Feb–Jun 2026): NO at p>=0.95 was net −$1,170 on $77k deployed (win% at or
-# below breakeven — tail losses eat the pennies); the 0.85–0.95 band was +6.5%
-# ROI; open-ended extreme buckets and basis-suspect cities produced the four
-# largest losses; losers were sized LARGER than winners ($136 vs $114 avg).
+# PD-351 server-side trade gates. The price-band hypothesis comes from legacy
+# rows that lack confirmed-fill provenance, so it is a forward-test prior, not
+# validated realized profitability. Open-ended buckets and settlement-basis
+# uncertainty remain structural risk controls independent of that history.
 # Every gate is overridable per-trade ({"override": true}) — gates inform
 # operator discretion, they don't replace it (PD-340 ruling).
 TRADE_GATES = {
@@ -296,11 +298,38 @@ TRADE_GATES = {
     "no_price_ceiling": 0.95,
     # Hard per-position size cap (NO-side downside = full size).
     "max_loss_cap_usd": 150.0,
+    # Aggregate reserved + filled dollars across one city/date/type event.
+    "max_event_exposure_usd": 300.0,
     # Reject trades when the backing scan is older than this (cached prices are
     # the execution prices — a restart-restored disk cache can be days old).
     "max_scan_age_min": 15.0,
     # Reject when the live ask has moved beyond this from the displayed price.
     "requote_tolerance": 0.02,
+}
+
+# Profit-strategy defaults. These are defaults, not locks: every value is
+# accepted as a per-run override by auto_harvest.py and the strategy helpers.
+# The 90-95c band is the forward-test cohort identified in the honest-fill
+# review; it must not be represented as proven profitability until confirmed
+# post-fix fills have resolved.
+STRATEGY_CONFIG = {
+    "price_floor": 0.90,
+    "price_ceiling": 0.95,
+    "min_net_win_return_pct": 0.25,
+    "max_risk_score": 4,
+    "max_position_usd": 150.0,
+    "max_event_exposure_usd": 300.0,
+    "max_cycle_exposure_usd": 600.0,
+    "max_open_orders": 8,
+    "max_level_depth_fraction": 1.0,
+    "requote_tolerance": 0.02,
+    "required_recommendation_status": "ROOM",
+    "required_basis_confidence": "TRUSTED",
+    "allow_open_buckets": False,
+    "allow_unknown_fees": False,
+    "arbitrage_min_profit_pct": 0.25,
+    "arbitrage_slippage_bps": 20,
+    "arbitrage_signal_only": True,
 }
 
 # API endpoints

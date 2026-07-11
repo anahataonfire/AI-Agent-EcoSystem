@@ -1,99 +1,68 @@
 # Weather Trading
 
-Automated weather forecast scanning and edge calculation for Polymarket weather markets.
+Polymarket weather-market scanner, paper/live order operator, lifecycle ledger, and fill-caveated strategy backtester.
 
-## Features
+The application is paper-first. A submitted, LIVE, MATCHED, or MINED order reserves cash but is not a position. Only an authenticated CONFIRMED trade event creates verified exposure and eligible P&L.
 
-- **Forecast Fetching**: NWS, Open-Meteo, and other weather APIs
-- **Market Scanning**: Find weather bracket markets on Polymarket
-- **Edge Calculation**: Compare forecasts to market prices
-- **Telegram Alerts**: Get notified of opportunities
-- **Backtesting**: Test strategies against historical data
-- **Trading**: Optional automated execution via CLOB
-
-## Quick Start
+## Start
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+python -m venv .venv
+./.venv/bin/pip install -r requirements.txt
+# Terminal 1
+cd backend && ../.venv/bin/python -m uvicorn api:app --reload --port 8000
 
-# Set up environment
-cp .env.example .env
-# Edit .env with your Telegram credentials
-
-# Run a scan (dry-run mode)
-python main.py --dry-run
-
-# Run a full scan with alerts
-python main.py
+# Terminal 2
+cd ui && npm run dev
 ```
 
-## CLI Options
+The backend binds to `127.0.0.1:8000`; the Next.js dashboard runs on `127.0.0.1:3000`.
+
+## Strategy surfaces
+
+- Multi-model HIGH and LOW forecasts with separate model-spread risk.
+- Settlement-basis correction on both YES and NO candidates.
+- Exact-station hard bounds only when market rules identify an authoritative `weather.gov` station.
+- Polymarket dynamic taker-fee modeling and explicit maker-zero post-only handling.
+- Configurable 90–95¢ forward-test cohort, book-depth cap, price re-quote, event exposure, and cycle exposure.
+- Complete-set weather arbitrage detection with shared Gamma event identity, full bucket coverage, fee/slippage guards, and signal-only default.
+
+Conditional net winning payoff is not expected value. The repository currently has no verified resolved fill cohort, so historical returns are hypothesis-generating only.
+
+## Validate
 
 ```bash
-python main.py [OPTIONS]
-
-Options:
-  --cities NYC LA SEA    Cities to scan (default: all active)
-  --dry-run              Print results without sending alerts
-  --verbose, -v          Enable debug logging
-  --test-telegram        Test Telegram connection and exit
+PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m pytest -p no:cacheprovider
+./.venv/bin/python -m compileall -q -f -x 'ui|\.venv|\.next|data-old' .
+PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin npm --prefix ui exec tsc -- --noEmit --incremental false
 ```
 
-## Configuration
+## Backtest
 
-Edit `config.py` to customize:
-- `ACTIVE_CITIES`: Cities to scan
-- `EDGE_CONFIG`: Minimum edge thresholds
-- `SCAN_CONFIG`: Scan frequency settings
-- `POSITION_CONFIG`: Position sizing
-
-## Directory Structure
-
-```
-weather-trading/
-├── main.py           # CLI entry point
-├── config.py         # Configuration
-├── scanner.py        # Polymarket market scanner
-├── forecaster.py     # Weather forecast fetching
-├── edge_calculator.py # Edge calculation logic
-├── alerter.py        # Telegram notifications
-├── probability.py    # Temperature probability models
-├── trader.py         # Trade execution
-├── clob_client.py    # Polymarket CLOB client
-├── backtester.py     # Backtesting framework
-├── browser_scraper.py # Browser-based scraping
-├── graph_client.py   # Subgraph queries
-├── market_ids.py     # Market ID lookups
-├── requirements.txt
-└── .env.example
-```
-
-## Usage Examples
-
-### Scan NYC and Seattle
 ```bash
-python main.py --cities nyc seattle --dry-run
+./.venv/bin/python scripts/backtest_profit_strategy.py \
+  --band 0.90:0.95 \
+  --fee-bps 500 \
+  --slippage-bps 20 \
+  --output reports/profit_strategy_backtest.json
 ```
 
-### Run as cron job (every 30 minutes)
+The output separates provisional legacy outcomes from verified fills and splits train/test chronologically by target date. Bands, fee parameters, slippage, split, source database, and output path are CLI-overridable.
+
+## Automation
+
 ```bash
-*/30 * * * * cd /path/to/weather-trading && python main.py
+# Paper mode; local logs only
+./.venv/bin/python auto_harvest.py --no-vpn --order-mode POST_ONLY
+
+# Inspect every override
+./.venv/bin/python auto_harvest.py --help
 ```
 
-### Test Telegram setup
-```bash
-python main.py --test-telegram
-```
+Live mode requires explicit `--live`, valid Polymarket credentials, and available bankroll. External bdc-fabric log sync requires both live mode and explicit `--sync-bdc-fabric`; dry-run cannot trigger it.
 
-## How It Works
+## Runtime controls
 
-1. **Fetch Forecasts**: Get temperature forecasts from NWS/Open-Meteo
-2. **Scan Markets**: Find weather bracket markets on Polymarket
-3. **Calculate Edge**: Compare forecast probability to market price
-4. **Alert**: Send Telegram notification if edge > threshold (15%)
-5. **Optional Trade**: Execute trades via CLOB client
+The dashboard and `/api/settings` expose bankroll, opportunity exposure, event exposure, maximum scan age, re-quote tolerance, and default `GTC`/`POST_ONLY` order mode. Trade requests can provide a per-order mode and explicit gate override.
 
-## License
-
-MIT
+See [docs/weather-trading-operations.html](docs/weather-trading-operations.html) for the lifecycle, profit-screen, backtest, and operating runbook.

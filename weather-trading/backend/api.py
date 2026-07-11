@@ -6,6 +6,7 @@ import os
 import sys
 import json
 import threading
+import uuid
 
 # PD-326 (handoff Step 4): persist the edge-harvest opp cache across uvicorn
 # --reload restarts so the /api/trade lookup doesn't 404 during the empty
@@ -107,7 +108,12 @@ except ImportError as e:
     ]
 
 # Import and initialize database
-from database import init_db, save_position, load_positions, update_position_status, save_order, get_position_count, expire_stale_positions, create_position_with_order
+from database import (
+    ACTIVE_ORDER_STATUSES, ACTIVE_POSITION_STATUSES, expire_stale_positions, get_exposure, init_db,
+    load_orders, load_positions, resolve_position, save_order, update_order_status,
+)
+from identifiers import canonical_event_key
+from order_lifecycle import apply_snapshot, apply_trade_snapshot
 init_db()
 expire_stale_positions(hours=48)
 
@@ -124,6 +130,13 @@ class AppState:
         if cached_opps:
             logger.info(f"Restored {len(cached_opps)} cached edge-harvest opps from disk (lastScan={cached_scan})")
         self.is_live = False
+        self.risk_settings = {
+            "maxOpportunityExposureUsd": float(TRADE_GATES.get("max_loss_cap_usd", 150.0)),
+            "maxEventExposureUsd": float(TRADE_GATES.get("max_event_exposure_usd", 300.0)),
+            "defaultOrderMode": str(EXECUTION_CONFIG.get("default_order_mode", "GTC")).upper(),
+            "maxScanAgeMin": float(TRADE_GATES.get("max_scan_age_min", 15.0)),
+            "requoteTolerance": float(TRADE_GATES.get("requote_tolerance", 0.02)),
+        }
         if MODULES_LOADED:
             self.sizer = PositionSizer(bankroll=self.bankroll)
             self.executor = PolymarketExecutor(dry_run=True)
@@ -163,6 +176,7 @@ class TradeRequest(BaseModel):
     # PD-351: trade past the strategy gates (price ceiling / open bucket /
     # NO_ROOM / loss cap). Gates inform discretion, not replace it.
     override: bool = False
+    order_mode: Optional[Literal["GTC", "POST_ONLY"]] = None
 
 class ScanRequest(BaseModel):
     cities: Optional[List[str]] = None
@@ -170,23 +184,30 @@ class ScanRequest(BaseModel):
 class SettingsRequest(BaseModel):
     bankroll: Optional[float] = None
     is_live: Optional[bool] = None
+    max_opportunity_exposure_usd: Optional[float] = None
+    max_event_exposure_usd: Optional[float] = None
+    default_order_mode: Optional[Literal["GTC", "POST_ONLY"]] = None
+    max_scan_age_min: Optional[float] = None
+    requote_tolerance: Optional[float] = None
 
 
 @app.get("/api/status")
 def get_status():
-    open_pos = [p for p in state.positions if p.get("status") == "OPEN"]
-    deployed = sum(p.get("size", 0) for p in open_pos)
+    open_pos = [p for p in state.positions if p.get("status") in ACTIVE_POSITION_STATUSES]
+    deployed, reserved = get_exposure()
     
     return {
         "bankroll": state.bankroll,
         "deployed": deployed,
-        "available": state.bankroll - deployed,
+        "reserved": reserved,
+        "available": state.bankroll - deployed - reserved,
         "positions": len(open_pos),
         "isLive": state.is_live,
         # Ground truth from the executor itself, not the flag — these can only
         # diverge if a mode switch failed, and that divergence must be visible.
         "executorLive": bool(MODULES_LOADED and state.executor and not state.executor.dry_run),
         "lastScan": state.last_scan,
+        **state.risk_settings,
     }
 
 
@@ -194,6 +215,8 @@ def get_status():
 def update_settings(request: SettingsRequest):
     """Update trading settings (bankroll, live mode)."""
     if request.bankroll is not None:
+        if request.bankroll <= 0:
+            raise HTTPException(400, "Bankroll must be positive")
         state.set_bankroll(request.bankroll)
         logger.info(f"Updated bankroll to ${request.bankroll}")
     
@@ -209,10 +232,27 @@ def update_settings(request: SettingsRequest):
             )
         logger.info(f"Trading mode set to: {'LIVE' if request.is_live else 'PAPER'}")
 
+    for value, key in (
+        (request.max_opportunity_exposure_usd, "maxOpportunityExposureUsd"),
+        (request.max_event_exposure_usd, "maxEventExposureUsd"),
+        (request.max_scan_age_min, "maxScanAgeMin"),
+    ):
+        if value is not None:
+            if value <= 0:
+                raise HTTPException(400, f"{key} must be positive")
+            state.risk_settings[key] = float(value)
+    if request.requote_tolerance is not None:
+        if request.requote_tolerance < 0:
+            raise HTTPException(400, "requoteTolerance must be non-negative")
+        state.risk_settings["requoteTolerance"] = float(request.requote_tolerance)
+    if request.default_order_mode is not None:
+        state.risk_settings["defaultOrderMode"] = request.default_order_mode
+
     return {
         "success": True,
         "bankroll": state.bankroll,
         "isLive": state.is_live,
+        **state.risk_settings,
     }
 
 
@@ -315,6 +355,7 @@ def get_opportunities():
 # duplicate-click protection must be explicit.
 _TRADE_INFLIGHT = set()
 _TRADE_INFLIGHT_LOCK = threading.Lock()
+_TRADE_EXECUTION_LOCK = threading.Lock()
 
 
 @app.post("/api/trade")
@@ -327,7 +368,11 @@ def execute_trade(request: TradeRequest):
             raise HTTPException(409, "A trade for this opportunity is already in flight")
         _TRADE_INFLIGHT.add(request.opportunity_id)
     try:
-        return _execute_trade_inner(request)
+        # Serialize the exposure-check -> submit -> reserve sequence. The
+        # per-opportunity guard alone cannot stop two different buckets in the
+        # same city/date event from racing the aggregate cap.
+        with _TRADE_EXECUTION_LOCK:
+            return _execute_trade_inner(request)
     finally:
         with _TRADE_INFLIGHT_LOCK:
             _TRADE_INFLIGHT.discard(request.opportunity_id)
@@ -358,9 +403,9 @@ def _execute_trade_inner(request: TradeRequest):
 
     # PD-351 H3: cached prices ARE the execution prices — refuse to trade off a
     # stale scan (the disk-restored cache can be days old after a restart).
-    # Deliberately NOT overridable: stale quotes are objectively wrong, and a
-    # fresh scan is 20-40s away.
-    max_age_min = TRADE_GATES["max_scan_age_min"]
+    # Runtime-adjustable and one-off overrideable. The live-book check below
+    # still fails closed when no executable quote exists.
+    max_age_min = state.risk_settings["maxScanAgeMin"]
     scan_age_min = None
     if state.last_scan:
         try:
@@ -369,7 +414,7 @@ def _execute_trade_inner(request: TradeRequest):
             ).total_seconds() / 60.0
         except (ValueError, TypeError):
             scan_age_min = None
-    if scan_age_min is None or scan_age_min > max_age_min:
+    if not request.override and (scan_age_min is None or scan_age_min > max_age_min):
         age_txt = f"{scan_age_min:.0f} min old" if scan_age_min is not None else "of unknown age"
         raise HTTPException(
             409,
@@ -386,11 +431,39 @@ def _execute_trade_inner(request: TradeRequest):
     
     if size < 0.01:
         raise HTTPException(400, "Position size too small (min $0.01)")
-    
-    open_positions = [p for p in state.positions if p.get("status") == "OPEN"]
-    deployed = sum(p.get("size", 0) for p in open_positions)
-    if size > state.bankroll - deployed:
-        raise HTTPException(400, f"Insufficient funds. Available: ${state.bankroll - deployed:.2f}")
+
+    event_key = canonical_event_key(
+        opp.get("city", ""), opp.get("targetDate", ""), opp.get("marketType", "high"),
+        event_id=opp.get("eventId"),
+    )
+    deployed, reserved = get_exposure()
+    available = state.bankroll - deployed - reserved
+    if size > available:
+        raise HTTPException(400, f"Insufficient funds. Available after live reservations: ${available:.2f}")
+    opp_filled, opp_reserved = get_exposure(opportunity_id=opp["id"])
+    event_filled, event_reserved = get_exposure(event_key=event_key)
+    if not request.override:
+        opp_cap = state.risk_settings["maxOpportunityExposureUsd"]
+        event_cap = state.risk_settings["maxEventExposureUsd"]
+        if opp_filled + opp_reserved + size > opp_cap:
+            raise HTTPException(409, {
+                "gate": True,
+                "reason": "opportunity_exposure",
+                "currentExposure": opp_filled + opp_reserved,
+                "requested": size,
+                "cap": opp_cap,
+                "hint": "Adjust the runtime cap or re-send with override:true.",
+            })
+        if event_filled + event_reserved + size > event_cap:
+            raise HTTPException(409, {
+                "gate": True,
+                "reason": "event_exposure",
+                "eventKey": event_key,
+                "currentExposure": event_filled + event_reserved,
+                "requested": size,
+                "cap": event_cap,
+                "hint": "Adjust the runtime cap or re-send with override:true.",
+            })
     
     # Safety gate for edge harvest trades (PD-147 NO-side; PD-195 YES-side mirror)
     if opp.get("thresholdType"):
@@ -436,6 +509,14 @@ def _execute_trade_inner(request: TradeRequest):
     
     if not token_id:
         raise HTTPException(400, "No token ID available for this market")
+    order_mode = request.order_mode or state.risk_settings["defaultOrderMode"]
+    displayed_price = float(price or 0)
+    authoritative_hard_bound = bool(
+        side == "NO"
+        and opp.get("nowcastHardBound")
+        and opp.get("nowcastStatus") == "BUCKET_ELIMINATED"
+        and opp.get("nowcastStation")
+    )
 
     # PD-351 strategy gates — server-side enforcement of what the display
     # already says (numbers + rationale in config.TRADE_GATES). Overridable
@@ -443,16 +524,16 @@ def _execute_trade_inner(request: TradeRequest):
     if not request.override:
         reasons = []
         if opp.get("thresholdType") and side == "NO":
-            if opp.get("openBucket"):
+            if opp.get("openBucket") and not authoritative_hard_bound:
                 reasons.append(
                     "open-ended extreme bucket — NO here bets against the whole tail "
                     "(PD-343 loss class: tokyo ≥28°C −$542, BA ≥27°C −$225)"
                 )
-            if opp.get("recommendationStatus") == "NO_ROOM":
+            if opp.get("recommendationStatus") == "NO_ROOM" and not authoritative_hard_bound:
                 margin = opp.get("marginC")
                 margin_txt = f" (margin {margin:+.1f}°C)" if isinstance(margin, (int, float)) else ""
                 reasons.append(f"NO_ROOM — corrected forecast leaves no room{margin_txt}")
-            if price >= TRADE_GATES["no_price_ceiling"] and not (
+            if price >= TRADE_GATES["no_price_ceiling"] and not authoritative_hard_bound and not (
                 opp.get("recommendationStatus") == "ROOM"
                 and opp.get("basisConfidence") == "TRUSTED"
             ):
@@ -472,10 +553,10 @@ def _execute_trade_inner(request: TradeRequest):
                 "hint": "Re-send with override:true to trade past the gates.",
             })
 
-    # PD-351 H3 re-quote: the displayed ask is from scan time. A GTC limit at a
-    # stale price either overpays (ask moved up) or rests unfilled and invisible.
-    # Not overridable — if the price genuinely moved, re-scan and trade fresh.
-    if opp.get("thresholdType"):
+    # Re-quote immediately before submission. GTC uses the fresh ask. POST_ONLY
+    # uses the fresh bid so the order is non-marketable and cannot accidentally
+    # pay taker fees. Both tolerance and scan age are operator-overridable.
+    if opp.get("thresholdType") or order_mode == "POST_ONLY":
         live_book = get_edge_harvest_scanner()._fetch_order_book(token_id)
         live_ask = live_book.get("best_ask_price") or 0.0
         if live_ask <= 0:
@@ -483,12 +564,32 @@ def _execute_trade_inner(request: TradeRequest):
                 423,
                 "Live order book has no asks for this token — market likely closed or exhausted. Re-scan.",
             )
-        if abs(live_ask - price) > TRADE_GATES["requote_tolerance"]:
+        tolerance = state.risk_settings["requoteTolerance"]
+        if opp.get("thresholdType") and not request.override and abs(live_ask - displayed_price) > tolerance:
             raise HTTPException(
                 409,
-                f"Price moved since the scan: displayed ${price:.3f}, live ask ${live_ask:.3f} "
-                f"(tolerance ${TRADE_GATES['requote_tolerance']:.2f}). Re-scan to refresh.",
+                f"Price moved since the scan: displayed ${displayed_price:.3f}, live ask ${live_ask:.3f} "
+                f"(tolerance ${tolerance:.2f}). Re-scan or adjust/override the runtime tolerance.",
             )
+        if order_mode == "POST_ONLY":
+            live_bid = float(live_book.get("best_bid_price") or 0.0)
+            if live_bid <= 0 or live_bid >= live_ask:
+                raise HTTPException(423, "No safe non-marketable bid is available for a post-only BUY.")
+            price = live_bid
+        elif opp.get("thresholdType"):
+            price = live_ask
+
+    if not isinstance(price, (int, float)) or not 0 < price < 1:
+        raise HTTPException(423, "No valid execution price is available for this token")
+    if (not request.override and opp.get("thresholdType") and side == "NO"
+            and price >= TRADE_GATES["no_price_ceiling"]
+            and not authoritative_hard_bound
+            and not (opp.get("recommendationStatus") == "ROOM" and opp.get("basisConfidence") == "TRUSTED")):
+        raise HTTPException(400, {
+            "gate": True,
+            "reasons": [f"Fresh execution price ${price:.2f} violates the NO price ceiling"],
+            "hint": "Adjust the strategy setting or re-send with override:true.",
+        })
 
     # ---- Order placement (own try: PD-351 C1/M3 — an exception here does NOT
     # mean no order exists; a timeout after CLOB acceptance leaves a live order) ----
@@ -497,9 +598,12 @@ def _execute_trade_inner(request: TradeRequest):
     try:
         result = state.executor.place_order(
             token_id=token_id,
-            side=side,
+            # `side` above is the outcome token (YES/NO). The CLOB action is
+            # always BUY because we already selected the corresponding token.
+            side="BUY",
             price=price,
-            size=shares
+            size=shares,
+            post_only=order_mode == "POST_ONLY",
         )
     except Exception as e:
         logger.error(f"Order POST raised: {e}")
@@ -523,42 +627,39 @@ def _execute_trade_inner(request: TradeRequest):
 
     # ---- Persistence (separate try: PD-351 C1 — the order above is REAL even
     # if these writes fail; never report a placed order as a failed trade) ----
-    position = {
-        "id": None,  # assigned atomically by create_position_with_order
-        "opportunityId": opp["id"],
-        "city": opp["city"],
-        "bucket": opp["bucket"],
-        "targetDate": opp["targetDate"],
-        "side": side,
-        "entryPrice": price,
-        "shares": shares,
-        "currentPrice": price,  # static until a pricing refresher exists
-        "size": size,
-        "status": "OPEN",
-        "openedAt": datetime.now(timezone.utc).isoformat(),
-        "orderId": result.order_id,
-        "unrealizedPnl": 0,
-        "hoursRemaining": opp.get("hoursRemaining", 24),
-        "thresholdType": opp.get("thresholdType"),  # Track edge harvest trades
-    }
+    now = datetime.now(timezone.utc).isoformat()
+    normalized_status = {
+        "confirmed": "CONFIRMED", "matched": "MATCHED", "dry_run": "CONFIRMED",
+        "live": "LIVE", "delayed": "DELAYED", "partially_filled": "PARTIALLY_FILLED",
+    }.get(result.status, (result.status or "SUBMITTED").upper())
     order_record = {
         # Real CLOB ids are unique; dry-run/missing ids get a position-derived
         # id inside create_position_with_order (the old "dry_run" PK collapsed
         # all paper orders onto one row).
-        "id": result.order_id,
+        "id": result.order_id if result.order_id and result.order_id != "dry_run" else f"paper_{uuid.uuid4().hex}",
         "positionId": None,  # assigned with the position id
         "opportunityId": opp["id"],
         "tokenId": token_id,
+        "city": opp["city"],
+        "bucket": opp["bucket"],
+        "targetDate": opp["targetDate"],
+        "eventKey": event_key,
+        "thresholdType": opp.get("thresholdType"),
+        "hoursRemaining": opp.get("hoursRemaining", 24),
         "side": side,
         "price": price,
         "sizeShares": shares,
         "sizeDollars": size,
         # PD-351 M1 honest status: "live" = RESTING on the book, not filled.
-        "status": {"matched": "FILLED", "dry_run": "FILLED", "live": "LIVE",
-                   "delayed": "DELAYED"}.get(result.status, (result.status or "SUBMITTED").upper()),
+        "status": normalized_status,
         "filledAmount": result.filled_amount,
         "avgPrice": result.avg_price,
-        "createdAt": datetime.now(timezone.utc).isoformat(),
+        "actualCost": result.actual_cost,
+        "fees": result.fees,
+        "rebates": result.rebates,
+        "orderMode": result.order_mode or order_mode,
+        "reservedDollars": 0 if normalized_status == "CONFIRMED" else size,
+        "createdAt": now,
     }
     execution_result = {
         "success": True,
@@ -567,12 +668,21 @@ def _execute_trade_inner(request: TradeRequest):
         "filled_amount": result.filled_amount,
         "avg_price": result.avg_price,
         "price": price,
+        "actual_cost": result.actual_cost,
+        "fees": result.fees,
+        "rebates": result.rebates,
+        "order_mode": result.order_mode or order_mode,
     }
     try:
-        create_position_with_order(position, order_record)
-        # Newest-first to match the DB load order (the old append() buried fresh
-        # trades at the bottom of an 900-row table).
-        state.positions.insert(0, position)
+        save_order(order_record)
+        if normalized_status == "CONFIRMED":
+            update_order_status(
+                order_record["id"],
+                "CONFIRMED", filled_amount=result.filled_amount, avg_price=result.avg_price,
+                actual_cost=result.actual_cost, fees=result.fees, rebates=result.rebates,
+            )
+        state.positions = load_positions()
+        position = next((p for p in state.positions if p.get("orderId") == order_record["id"]), None)
     except Exception as e:
         logger.error(
             f"PERSISTENCE FAILED for placed order {result.order_id}: {e} — "
@@ -580,7 +690,8 @@ def _execute_trade_inner(request: TradeRequest):
         )
         return {
             "success": True,
-            "position": position,
+            "position": None,
+            "order": order_record,
             "persistenceError": (
                 f"{type(e).__name__}: {e} — the order WAS placed "
                 f"(id {result.order_id}); it is missing from local records. "
@@ -592,6 +703,7 @@ def _execute_trade_inner(request: TradeRequest):
     return {
         "success": True,
         "position": position,
+        "order": next((o for o in load_orders() if o["id"] == order_record["id"]), order_record),
         "executionResult": execution_result,
     }
 
@@ -602,44 +714,47 @@ def get_positions():
 
 
 @app.post("/api/positions/{position_id}/close")
-def close_position(position_id: str, outcome: str = "MANUAL"):
+def close_position(position_id: str, outcome: str = "MANUAL", pnl: Optional[float] = None):
     pos = next((p for p in state.positions if p["id"] == position_id), None)
     if not pos:
         raise HTTPException(404, "Position not found")
-    
-    pos["status"] = outcome
-    pos["hoursRemaining"] = 0
-    update_position_status(position_id, outcome)
-    
+    try:
+        pos = resolve_position(position_id, outcome, pnl=pnl, source="api_manual")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    state.positions = load_positions()
     return {"success": True, "position": pos}
 
 
 @app.get("/api/stats")
 def get_stats():
-    open_pos = [p for p in state.positions if p.get("status") == "OPEN"]
-    closed_pos = [p for p in state.positions if p.get("status") in ["WON", "LOST"]]
+    open_pos = [p for p in state.positions if p.get("status") in ACTIVE_POSITION_STATUSES]
+    closed_pos = [
+        p for p in state.positions
+        if p.get("status") in ["WON", "LOST"] and p.get("fillVerified")
+    ]
+    legacy_pos = [p for p in state.positions if p.get("status") == "UNCONFIRMED_LEGACY"]
     
     wins = len([p for p in closed_pos if p["status"] == "WON"])
     losses = len([p for p in closed_pos if p["status"] == "LOST"])
     # PD-351 M5: realized pnl is the truth (backfill-populated); unrealizedPnl
     # is a static 0 written at open. The old sum-of-unrealized read ~$0 forever
     # on a book that had lost $901.
-    total_pnl = sum(
-        (p.get("pnl") if p.get("pnl") is not None else p.get("unrealizedPnl", 0)) or 0
-        for p in state.positions
-    )
-    deployed = sum(p.get("size", 0) for p in open_pos)
+    total_pnl = sum((p.get("pnl") or 0) for p in closed_pos)
+    deployed, reserved = get_exposure()
     
     return {
         "bankroll": state.bankroll,
         "deployed": deployed,
-        "available": state.bankroll - deployed,
+        "reserved": reserved,
+        "available": state.bankroll - deployed - reserved,
         "totalPnl": total_pnl,
         "winCount": wins,
         "lossCount": losses,
         "winRate": wins / (wins + losses) if (wins + losses) > 0 else None,
         "openPositions": len(open_pos),
-        "totalTrades": len(state.positions),
+        "totalTrades": len([p for p in state.positions if p.get("fillVerified")]),
+        "legacyTrades": len(legacy_pos),
     }
 
 
@@ -737,8 +852,36 @@ def _run_edge_harvest_scan(cities: List[str]):
         for rows in pool.map(_city_forecasts, list(needed.items())):
             forecasts.update(rows)
 
+    # Hard bounds are market-rule specific, not city defaults. Preserve the
+    # market type in the key because high/low events can name different rule
+    # sources even on the same city/date.
+    nowcast_specs = {
+        (m.city_key, m.target_date, getattr(m, "market_type", "high")): (
+            getattr(m, "settlement_station", None),
+            getattr(m, "resolution_source_url", None),
+        )
+        for m in markets
+    }
+
+    def _market_nowcast(item):
+        key, (station_id, source_url) = item
+        city, target, _market_type = key
+        try:
+            return key, forecaster.fetch_station_nowcast(
+                city, target, station_id=station_id, resolution_source_url=source_url,
+            )
+        except Exception as e:
+            logger.warning(f"Nowcast unavailable for {city}/{target}: {e}")
+            return key, None
+
+    nowcasts = {}
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        for key, nowcast in pool.map(_market_nowcast, list(nowcast_specs.items())):
+            if nowcast is not None:
+                nowcasts[key] = nowcast
+
     # Find edge harvest opportunities
-    opportunities = edge_scanner.find_opportunities(markets, forecasts)
+    opportunities = edge_scanner.find_opportunities(markets, forecasts, nowcasts=nowcasts)
     logger.info(f"Found {len(opportunities)} edge harvest opportunities")
     
     results = []
@@ -793,6 +936,20 @@ def _run_edge_harvest_scan(cities: List[str]):
             "yesPrice": opp.yes_price,
             "noPrice": opp.no_price,
             "potentialReturnPct": opp.potential_return_pct,
+            "marketId": getattr(opp, 'market_id', ''),
+            "eventKey": getattr(opp, 'event_key', ''),
+            "grossReturnPct": getattr(opp, 'gross_return_pct', 0.0),
+            "netWinReturnPct": getattr(opp, 'net_win_return_pct', None),
+            "estimatedFeePct": getattr(opp, 'estimated_fee_pct', None),
+            "feeEnabled": getattr(opp, 'fee_enabled', None),
+            "feeRateBps": getattr(opp, 'fee_rate_bps', None),
+            "feeSource": getattr(opp, 'fee_source', 'UNKNOWN'),
+            "feeKnown": bool(getattr(opp, 'fee_known', False)),
+            "feeModel": getattr(opp, 'fee_model', 'unknown-fee-metadata'),
+            "nowcastStatus": getattr(opp, 'nowcast_status', 'UNKNOWN'),
+            "nowcastStation": getattr(opp, 'nowcast_station', None),
+            "observedExtreme": getattr(opp, 'observed_extreme', None),
+            "nowcastHardBound": bool(getattr(opp, 'nowcast_hard_bound', False)),
             "riskTier": opp.risk_tier,
             "riskScore": opp.risk_score,
             "riskFactors": opp.risk_factors,
@@ -874,14 +1031,23 @@ def get_open_orders():
                         "sizeMatched": float(o.get("size_matched", 0)),
                         "sizeRemaining": float(o.get("original_size", 0)) - float(o.get("size_matched", 0)),
                         "status": o.get("status", "UNKNOWN"),
+                        "orderMode": o.get("order_mode") or o.get("orderMode") or "GTC",
                         "createdAt": o.get("created_at", ""),
                         "source": "LIVE",
                     })
         except Exception as e:
             logger.warning(f"Failed to fetch live orders: {e}")
+
+        # The dashboard polls this endpoint every minute. Use that authenticated
+        # poll to reconcile local reservations against both order snapshots and
+        # confirmed trade records; otherwise orders that leave the open list
+        # remain stale LIVE forever.
+        try:
+            _reconcile_active_local_orders()
+        except Exception as e:
+            logger.warning(f"Active-order reconciliation incomplete: {e}")
     
     # Also include local order records from database
-    from database import load_orders
     local_orders = load_orders()
     for o in local_orders:
         # Don't duplicate if already in live orders
@@ -895,11 +1061,72 @@ def get_open_orders():
                 "sizeMatched": o.get("filled_amount", 0),
                 "sizeRemaining": o["size_shares"] - o.get("filled_amount", 0),
                 "status": o.get("status", "UNKNOWN"),
+                "orderMode": o.get("order_mode", "GTC"),
+                "reservedDollars": o.get("reserved_dollars", 0),
+                "actualCost": o.get("actual_cost", 0),
+                "fees": o.get("fees", 0),
+                "rebates": o.get("rebates", 0),
                 "createdAt": o["created_at"],
                 "source": "LOCAL",
             })
     
     return {"orders": orders}
+
+
+def _reconcile_one_local_order(local_order: dict, trades: Optional[list] = None) -> dict:
+    order_id = local_order["id"]
+    rest_error = trade_error = None
+    try:
+        apply_snapshot(state.executor.get_order_snapshot(order_id))
+    except Exception as e:
+        rest_error = e
+    try:
+        for snapshot in state.executor.get_order_trade_events(
+            order_id, local_order.get("token_id", ""), trades=trades,
+        ):
+            apply_trade_snapshot(snapshot)
+    except Exception as e:
+        trade_error = e
+    if rest_error and trade_error:
+        raise RuntimeError(f"REST={rest_error}; trades={trade_error}")
+    state.positions = load_positions()
+    return next(o for o in load_orders() if o["id"] == order_id)
+
+
+def _reconcile_active_local_orders() -> None:
+    active = [o for o in load_orders() if str(o.get("status", "")).upper() in ACTIVE_ORDER_STATUSES]
+    if not active:
+        return
+    # One authenticated trade-ledger fetch feeds every local order; per-order
+    # filtering happens in the executor adapter.
+    trades = state.executor.client.get_trades(only_first_page=False) or []
+    for local in active:
+        try:
+            _reconcile_one_local_order(local, trades=trades)
+        except Exception as e:
+            logger.warning(f"Could not reconcile order {local['id']}: {e}")
+
+
+@app.post("/api/orders/{order_id}/reconcile")
+def reconcile_order(order_id: str):
+    """Refresh from the authenticated REST adapter.
+
+    REST MATCHED remains nonterminal. A CONFIRMED lifecycle event (typically
+    from the authenticated user stream) creates the position idempotently via
+    the same database boundary.
+    """
+    if not MODULES_LOADED or not state.is_live:
+        raise HTTPException(400, "Authenticated reconciliation requires live mode")
+    try:
+        local = next((o for o in load_orders() if o["id"] == order_id), None)
+        if not local:
+            raise KeyError(order_id)
+        order = _reconcile_one_local_order(local)
+        return {"success": True, "order": order}
+    except KeyError:
+        raise HTTPException(404, "Local order not found")
+    except Exception as e:
+        raise HTTPException(502, f"Reconciliation failed: {e}")
 
 
 @app.post("/api/orders/{order_id}/cancel")
@@ -912,11 +1139,19 @@ def cancel_order(order_id: str):
         raise HTTPException(400, "Cannot cancel orders in paper mode")
     
     try:
-        # V2 SDK: cancel_order(OrderPayload) — V1's cancel(order_id) doesn't exist.
-        from py_clob_client_v2 import OrderPayload
-        result = state.executor.client.cancel_order(OrderPayload(orderID=order_id))
+        result = state.executor.cancel_order(order_id)
+        canceled = result.get("canceled", []) if isinstance(result, dict) else []
+        if order_id not in canceled:
+            not_canceled = result.get("not_canceled", {}) if isinstance(result, dict) else {}
+            reason = not_canceled.get(order_id, "exchange did not acknowledge cancellation")
+            raise HTTPException(409, f"Cancel not acknowledged: {reason}")
+        local = update_order_status(order_id, "CANCELED", raw_status="cancel_acknowledged")
         logger.info(f"Cancel order {order_id}: {result}")
-        return {"success": True, "result": result}
+        return {"success": True, "result": result, "order": local}
+    except KeyError:
+        raise HTTPException(404, "Local order not found; remote cancellation may have succeeded")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to cancel order {order_id}: {e}")
         raise HTTPException(500, f"Cancel failed: {str(e)}")

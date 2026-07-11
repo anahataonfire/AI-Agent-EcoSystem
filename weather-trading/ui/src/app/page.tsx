@@ -24,7 +24,7 @@ import {
   Settings,
   X
 } from 'lucide-react';
-import weatherApi, { Opportunity, Position, Stats, Status, EdgeHarvestOpportunity, EdgeHarvestStats, Order } from '@/lib/api';
+import weatherApi, { Opportunity, Position, Stats, Status, EdgeHarvestOpportunity, EdgeHarvestStats, Order, RuntimeSettings } from '@/lib/api';
 
 // --- Helpers ---
 
@@ -153,9 +153,8 @@ const OpportunityRow = ({ opt, onTrade, trading }: { opt: Opportunity, onTrade: 
 
 // Codex C v2: type the row against the API contract (was `any` before, so
 // the frontend silently accepted breaking changes to marketType/acceptingOrders
-// fields without compile-time check). `ev` is computed downstream from
-// riskScore+potentialReturnPct, not on the API contract.
-type EdgeHarvestRowOpp = EdgeHarvestOpportunity & { ev: number };
+// fields without compile-time check).
+type EdgeHarvestRowOpp = EdgeHarvestOpportunity;
 
 const EdgeHarvestRow = ({ opp, onTrade, trading, isLive }: { opp: EdgeHarvestRowOpp, onTrade: (opp: EdgeHarvestRowOpp, size: number) => void, trading: boolean, isLive: boolean }) => {
   const dollarLiquidity = (opp.bestAskSize ?? 0) * (opp.bestAskPrice ?? 0);
@@ -179,19 +178,22 @@ const EdgeHarvestRow = ({ opp, onTrade, trading, isLive }: { opp: EdgeHarvestRow
   const riskBg = opp.riskTier === 'LOW' ? 'bg-emerald-500/10' : opp.riskTier === 'MEDIUM' ? 'bg-yellow-500/10' : 'bg-rose-500/10';
   // PD-340 v3: settlement-basis status drives presentation. Missing → UNCORRECTED (fail-honest).
   const recStatus = opp.recommendationStatus ?? 'UNCORRECTED';
-  const roomColor = recStatus === 'ROOM' ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/40'
+  const roomColor = opp.nowcastHardBound ? 'text-cyan-200 bg-cyan-500/15 border-cyan-400/50'
+    : recStatus === 'ROOM' ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/40'
     : recStatus === 'NO_ROOM' ? 'text-rose-300 bg-rose-500/15 border-rose-500/40'
     : 'text-zinc-400 bg-zinc-700/30 border-zinc-600/40';
-  const roomLabel = recStatus === 'ROOM' ? 'ROOM' : recStatus === 'NO_ROOM' ? 'NO ROOM' : 'UNVERIFIED';
+  const roomLabel = opp.nowcastHardBound ? 'HARD BOUND' : recStatus === 'ROOM' ? 'ROOM' : recStatus === 'NO_ROOM' ? 'NO ROOM' : 'UNVERIFIED';
   const dlt = opp.effectiveDeltaC ?? 0;
-  const reason = opp.openBucket
+  const reason = opp.nowcastHardBound
+    ? `${opp.nowcastStation ?? 'authoritative station'} observed ${opp.observedExtreme?.toFixed(1) ?? '—'}° and eliminated this bucket`
+    : opp.openBucket
     ? 'open-ended bucket — bet against the whole tail'
     : recStatus === 'UNCORRECTED'
     ? (opp.basisStatus === 'uncorrected-coords-suspect'
         ? `erratic settlement · n=${opp.basisN ?? 0}`
         : `unproven · n=${opp.basisN ?? 0}`)
     : `settles ${dlt >= 0 ? '+' : ''}${dlt.toFixed(1)}°C vs your spot · n=${opp.basisN ?? 0}`;
-  const rowMuted = recStatus !== 'ROOM' ? 'opacity-60' : '';
+  const rowMuted = recStatus !== 'ROOM' && !opp.nowcastHardBound ? 'opacity-60' : '';
 
   return (
     <tr className={`border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors group ${rowMuted}`}>
@@ -248,9 +250,13 @@ const EdgeHarvestRow = ({ opp, onTrade, trading, isLive }: { opp: EdgeHarvestRow
       <td className="px-4 py-3 text-sm text-gray-300">{effectiveAsk != null ? `$${effectiveAsk.toFixed(2)}` : '—'}</td>
       <td className="px-4 py-3 text-sm text-gray-400">${dollarLiquidity.toFixed(0)}</td>
       <td className="px-3 py-4">
-        <span className="text-sm font-semibold text-emerald-400">{(opp.potentialReturnPct ?? 0).toFixed(1)}%</span>
+        <span className={`text-sm font-semibold ${opp.netWinReturnPct == null ? 'text-amber-400' : 'text-emerald-400'}`}>
+          {opp.netWinReturnPct == null ? 'unknown' : `${opp.netWinReturnPct.toFixed(2)}%`}
+        </span>
+        <div className="text-[10px] text-zinc-500" title={`${opp.feeModel ?? 'fee metadata unavailable'} · ${opp.feeSource ?? 'UNKNOWN'}`}>
+          gross {(opp.grossReturnPct ?? opp.potentialReturnPct ?? 0).toFixed(2)}% · {opp.feeKnown ? `${opp.feeRateBps ?? 0} bps rate` : 'fee unverified'}
+        </div>
       </td>
-      <td className="px-4 py-3 text-sm text-gray-300">{opp.ev.toFixed(2)}</td>
       <td className="px-3 py-4">
         <div className="flex flex-col">
           <span className={`text-xs font-medium px-2 py-0.5 rounded-full w-fit ${riskBg} ${riskColor}`}>
@@ -315,9 +321,9 @@ const EdgeHarvestRow = ({ opp, onTrade, trading, isLive }: { opp: EdgeHarvestRow
           <button
             onClick={() => onTrade(opp, size)}
             disabled={trading}
-            title={recStatus !== 'ROOM' ? `${roomLabel} — ${reason}` : undefined}
+            title={recStatus !== 'ROOM' && !opp.nowcastHardBound ? `${roomLabel} — ${reason}` : undefined}
             className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center disabled:bg-zinc-700 ${
-              recStatus === 'ROOM' ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300'
+              recStatus === 'ROOM' || opp.nowcastHardBound ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300'
             } ${isLive ? 'ring-2 ring-rose-500/70' : ''}`}
           >
             {trading ? <RefreshCcw size={12} className="animate-spin" /> : `Buy ${opp.recommendedSide ?? 'NO'}${isLive ? ' · LIVE' : ''}`}
@@ -347,7 +353,15 @@ export default function Dashboard() {
   const [activeView, setActiveView] = useState<'monitor' | 'portfolio' | 'orders'>('monitor');
   const [orders, setOrders] = useState<Order[]>([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settings, setSettings] = useState({ bankroll: 1000, isLive: false });
+  const [settings, setSettings] = useState<RuntimeSettings>({
+    bankroll: 1000,
+    isLive: false,
+    maxOpportunityExposureUsd: 150,
+    maxEventExposureUsd: 300,
+    defaultOrderMode: 'GTC',
+    maxScanAgeMin: 15,
+    requoteTolerance: 0.02,
+  });
   const [posFilter, setPosFilter] = useState<'open' | 'settled' | 'all'>('open');
   const [hideNoRoom, setHideNoRoom] = useState(true);
   const [cityFilter, setCityFilter] = useState('all');
@@ -385,7 +399,15 @@ export default function Dashboard() {
       }
       // Don't clobber half-edited form values while the modal is open.
       if (!isSettingsOpenRef.current) {
-        setSettings({ bankroll: statusRes.bankroll, isLive: statusRes.isLive });
+        setSettings({
+          bankroll: statusRes.bankroll,
+          isLive: statusRes.isLive,
+          maxOpportunityExposureUsd: statusRes.maxOpportunityExposureUsd ?? 150,
+          maxEventExposureUsd: statusRes.maxEventExposureUsd ?? 300,
+          defaultOrderMode: statusRes.defaultOrderMode ?? 'GTC',
+          maxScanAgeMin: statusRes.maxScanAgeMin ?? 15,
+          requoteTolerance: statusRes.requoteTolerance ?? 0.02,
+        });
       }
     } catch (err) {
       console.error('Failed to fetch dashboard data', err);
@@ -512,6 +534,15 @@ export default function Dashboard() {
     }
   };
 
+  const handleReconcileOrder = async (orderId: string) => {
+    try {
+      await weatherApi.reconcileOrder(orderId);
+      await fetchData();
+    } catch (err: any) {
+      alert(err?.response?.data?.detail ?? err?.message ?? 'Failed to reconcile order');
+    }
+  };
+
   const handleSettingsUpdate = async () => {
     try {
       await weatherApi.updateSettings(settings);
@@ -522,16 +553,10 @@ export default function Dashboard() {
     }
   };
 
-  // Calculate EV and group by date
-  const oppsWithEV = edgeHarvestOpps.map(opp => ({
-    ...opp,
-    ev: (opp.potentialReturnPct * (100 - opp.riskScore) / 100)
-  }));
-
   // Harvest filter bar — options derive from loaded rows so they survive filtering.
   const cityOptions = Array.from(new Set(edgeHarvestOpps.map(o => o.city))).sort();
-  const filteredOpps = oppsWithEV.filter(o => {
-    if (hideNoRoom && (o.recommendationStatus === 'NO_ROOM' || o.openBucket)) return false;
+  const filteredOpps = edgeHarvestOpps.filter(o => {
+    if (hideNoRoom && !o.nowcastHardBound && (o.recommendationStatus === 'NO_ROOM' || o.openBucket)) return false;
     if (cityFilter !== 'all' && o.city !== cityFilter) return false;
     if (mtFilter !== 'all' && (o.marketType ?? 'high') !== mtFilter) return false;
     if (basisFilter === 'TRUSTED' && o.basisConfidence !== 'TRUSTED') return false;
@@ -546,18 +571,19 @@ export default function Dashboard() {
     return acc;
   }, {} as Record<string, typeof filteredOpps>);
 
-  // Sort dates chronologically, then sort opportunities within each date by EV descending
+  // Sort dates chronologically, then by conditional fee-net winning payoff.
   const sortedDates = Object.keys(groupedByDate).sort();
-  // PD-340 v3: ROOM first, then UNVERIFIED, then NO_ROOM (de-ranked); EV within each tier.
-  const statusRank = (o: typeof oppsWithEV[number]) =>
-    o.recommendationStatus === 'ROOM' ? 0 : o.recommendationStatus === 'NO_ROOM' ? 2 : 1;
+  // ROOM first, then UNVERIFIED, then NO_ROOM. This is a screening order, not EV.
+  const statusRank = (o: typeof edgeHarvestOpps[number]) =>
+    o.nowcastHardBound || o.recommendationStatus === 'ROOM' ? 0 : o.recommendationStatus === 'NO_ROOM' ? 2 : 1;
   sortedDates.forEach(date => {
-    groupedByDate[date].sort((a, b) => statusRank(a) - statusRank(b) || b.ev - a.ev);
+    groupedByDate[date].sort((a, b) => statusRank(a) - statusRank(b)
+      || (b.netWinReturnPct ?? -Infinity) - (a.netWinReturnPct ?? -Infinity));
   });
 
   // Positions view — newest first; ISO strings sort lexicographically.
-  const openPositions = positions.filter(p => p.status === 'OPEN');
-  const settledPositions = positions.filter(p => p.status !== 'OPEN');
+  const openPositions = positions.filter(p => p.status === 'OPEN' || p.status === 'RESOLUTION_PENDING');
+  const settledPositions = positions.filter(p => p.status !== 'OPEN' && p.status !== 'RESOLUTION_PENDING');
   const visiblePositions = [...(posFilter === 'open' ? openPositions : posFilter === 'settled' ? settledPositions : positions)]
     .sort((a, b) => (b.openedAt ?? '').localeCompare(a.openedAt ?? ''));
 
@@ -671,14 +697,14 @@ export default function Dashboard() {
           <StatCard
             title="Total Bankroll"
             value={stats ? `$${stats.bankroll.toFixed(2)}` : '---'}
-            subtext={stats ? `Available: $${stats.available.toFixed(2)}` : '...'}
+            subtext={stats ? `Available $${stats.available.toFixed(2)} · reserved $${(stats.reserved ?? 0).toFixed(2)}` : '...'}
             icon={Wallet}
             loading={loading}
           />
           <StatCard
             title="Win Rate"
             value={stats?.winRate != null ? `${(stats.winRate * 100).toFixed(1)}%` : 'N/A'}
-            subtext={stats ? `${stats.winCount} Wins / ${stats.lossCount} Losses` : '...'}
+            subtext={stats ? `${stats.winCount} verified wins / ${stats.lossCount} losses · ${stats.legacyTrades ?? 0} legacy excluded` : '...'}
             icon={TrendingUp}
             loading={loading}
           />
@@ -817,7 +843,7 @@ export default function Dashboard() {
                         <option value="TRUSTED">TRUSTED</option>
                         <option value="PROVISIONAL">PROVISIONAL+</option>
                       </select>
-                      <span className="ml-auto text-xs text-zinc-500">showing {filteredOpps.length} of {oppsWithEV.length}</span>
+                      <span className="ml-auto text-xs text-zinc-500">showing {filteredOpps.length} of {edgeHarvestOpps.length}</span>
                     </div>
                     <div className="overflow-x-auto">
                   <table className="min-w-full">
@@ -830,7 +856,6 @@ export default function Dashboard() {
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase">ASK</th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase">LIQUIDITY</th>
                         <th className="px-3 py-3.5 text-left text-xs font-semibold text-zinc-400 uppercase tracking-wider">Return</th>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase">EV</th>
                         <th className="px-3 py-3.5 text-left text-xs font-semibold text-zinc-400 uppercase tracking-wider">Risk</th>
                         <th className="px-3 py-3.5 text-left text-xs font-semibold text-zinc-400 uppercase tracking-wider">Settlement</th>
                         <th className="px-3 py-3.5 text-right text-xs font-semibold text-zinc-400 uppercase tracking-wider sm:pr-6">Action</th>
@@ -839,7 +864,7 @@ export default function Dashboard() {
                     <tbody className="divide-y divide-zinc-800/50">
                       {filteredOpps.length === 0 ? (
                         <tr>
-                          <td colSpan={11} className="py-12 text-center">
+                          <td colSpan={10} className="py-12 text-center">
                             <div className="flex flex-col items-center text-zinc-500">
                               <Zap size={32} className="mb-3 text-zinc-600" />
                               {edgeHarvestOpps.length > 0 ? (
@@ -860,7 +885,7 @@ export default function Dashboard() {
                         sortedDates.map(date => (
                           <React.Fragment key={date}>
                             <tr className="bg-gray-800/50">
-                              <td colSpan={11} className="px-4 py-2 text-sm font-semibold text-gray-300">
+                              <td colSpan={10} className="px-4 py-2 text-sm font-semibold text-gray-300">
                                 {new Date(date + 'T12:00:00Z').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
                               </td>
                             </tr>
@@ -1015,7 +1040,7 @@ export default function Dashboard() {
                             <div className="text-zinc-600 text-[10px]">{order.createdAt ? new Date(order.createdAt).toLocaleString() : ''}</div>
                           </td>
                           <td className="px-3 py-4 text-sm">
-                            <span className={`font-bold ${order.side === 'BUY' ? 'text-emerald-400' : 'text-rose-400'}`}>{order.side}</span>
+                            <span className={`font-bold ${order.side === 'BUY' || order.side === 'YES' ? 'text-emerald-400' : 'text-rose-400'}`}>{order.side}</span>
                           </td>
                           <td className="px-3 py-4 text-sm text-zinc-300">${order.price.toFixed(2)}</td>
                           <td className="px-3 py-4 text-sm text-zinc-300">{order.originalSize.toFixed(1)}</td>
@@ -1024,9 +1049,9 @@ export default function Dashboard() {
                             <span className="text-zinc-600 text-xs ml-1">/ {order.originalSize.toFixed(1)}</span>
                           </td>
                           <td className="px-3 py-4 text-sm">
-                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${order.status === 'LIVE' || order.status === 'SUBMITTED' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' :
-                              order.status === 'MATCHED' || order.status === 'FILLED' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
-                                order.status === 'CANCELLED' ? 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20' :
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${['LIVE', 'SUBMITTED', 'MATCHED', 'MINED', 'PARTIALLY_FILLED'].includes(order.status) ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' :
+                              order.status === 'CONFIRMED' || order.status === 'PARTIALLY_CONFIRMED' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
+                                order.status === 'CANCELLED' || order.status === 'CANCELED' ? 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20' :
                                   'bg-amber-500/10 text-amber-400 border border-amber-500/20'
                               }`}>
                               {order.status}
@@ -1034,17 +1059,30 @@ export default function Dashboard() {
                           </td>
                           <td className="px-3 py-4 text-sm">
                             <span className={`text-[10px] font-medium ${order.source === 'LIVE' ? 'text-blue-400' : 'text-zinc-500'}`}>
-                              {order.source}
+                              {order.source} · {order.orderMode ?? 'GTC'}
                             </span>
+                            {(order.reservedDollars ?? 0) > 0 && (
+                              <div className="text-[10px] text-amber-400">${order.reservedDollars?.toFixed(2)} reserved</div>
+                            )}
                           </td>
                           <td className="py-4 pl-3 pr-4 text-right text-sm sm:pr-6">
-                            {(order.status === 'LIVE' || order.status === 'SUBMITTED') && order.source === 'LIVE' && (
-                              <button
-                                onClick={() => handleCancelOrder(order.id)}
-                                className="px-2 py-1 bg-rose-600/20 hover:bg-rose-600/40 text-rose-400 text-xs font-medium rounded-lg transition-colors border border-rose-500/20"
-                              >
-                                Cancel
-                              </button>
+                            {live && ['LIVE', 'SUBMITTED', 'MATCHED', 'PARTIALLY_FILLED', 'PARTIALLY_CONFIRMED'].includes(order.status) && (
+                              <div className="flex justify-end gap-1">
+                                {order.source === 'LOCAL' && (
+                                  <button
+                                    onClick={() => handleReconcileOrder(order.id)}
+                                    className="px-2 py-1 bg-blue-600/20 hover:bg-blue-600/40 text-blue-300 text-xs font-medium rounded-lg border border-blue-500/20"
+                                  >
+                                    Reconcile
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => handleCancelOrder(order.id)}
+                                  className="px-2 py-1 bg-rose-600/20 hover:bg-rose-600/40 text-rose-400 text-xs font-medium rounded-lg transition-colors border border-rose-500/20"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
                             )}
                           </td>
                         </tr>
@@ -1115,6 +1153,68 @@ export default function Dashboard() {
                 />
                 <p className="text-zinc-600 text-[10px]">Adjusting bankroll recalibrates all Kelly criterion sizing.</p>
               </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider">
+                  Opportunity cap ($)
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={settings.maxOpportunityExposureUsd}
+                    onChange={(e) => setSettings({ ...settings, maxOpportunityExposureUsd: Number(e.target.value) })}
+                    className="mt-2 w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50 font-mono"
+                  />
+                </label>
+                <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider">
+                  Event cap ($)
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={settings.maxEventExposureUsd}
+                    onChange={(e) => setSettings({ ...settings, maxEventExposureUsd: Number(e.target.value) })}
+                    className="mt-2 w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50 font-mono"
+                  />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider">
+                  Max scan age (min)
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="0.5"
+                    value={settings.maxScanAgeMin}
+                    onChange={(e) => setSettings({ ...settings, maxScanAgeMin: Number(e.target.value) })}
+                    className="mt-2 w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50 font-mono"
+                  />
+                </label>
+                <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider">
+                  Requote tolerance ($)
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.001"
+                    value={settings.requoteTolerance}
+                    onChange={(e) => setSettings({ ...settings, requoteTolerance: Number(e.target.value) })}
+                    className="mt-2 w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50 font-mono"
+                  />
+                </label>
+              </div>
+
+              <label className="block text-zinc-400 text-xs font-bold uppercase tracking-wider">
+                Default order mode
+                <select
+                  value={settings.defaultOrderMode}
+                  onChange={(e) => setSettings({ ...settings, defaultOrderMode: e.target.value as 'GTC' | 'POST_ONLY' })}
+                  className="mt-2 w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                >
+                  <option value="GTC">GTC · may take or rest</option>
+                  <option value="POST_ONLY">Post-only · maker only</option>
+                </select>
+              </label>
 
               <button
                 onClick={handleSettingsUpdate}
