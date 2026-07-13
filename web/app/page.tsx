@@ -1,21 +1,44 @@
+"use client";
+
 import Link from "next/link";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 const quickActions = [
   { href: "/mission", label: "Run Mission", icon: "🚀", description: "Execute agent pipeline" },
   { href: "/polymarket", label: "Scan Markets", icon: "🎯", description: "Find trading opportunities" },
   { href: "/research", label: "Research", icon: "🔬", description: "Grounded deep dives" },
+  { href: "/datamarts", label: "Datamarts", icon: "📦", description: "Knowledge bundles" },
+  { href: "/health", label: "System Health", icon: "💊", description: "Check infrastructure" },
   { href: "/inbox", label: "Add Content", icon: "📥", description: "Save links or notes" },
 ];
 
-const stats = [
-  { label: "Curated Links", value: "32", icon: "📎", color: "from-purple-500 to-blue-500" },
-  { label: "Evidence Items", value: "242", icon: "📦", color: "from-blue-500 to-cyan-500" },
-  { label: "Categories", value: "12", icon: "🏷️", color: "from-cyan-500 to-teal-500" },
-  { label: "Tasks Active", value: "5", icon: "📋", color: "from-teal-500 to-green-500" },
-];
+interface DashboardStats {
+  curated_links: number;
+  evidence_items: number;
+  categories: number;
+  tasks_active: number;
+}
 
 export default function Dashboard() {
+  const [stats, setStats] = useState<DashboardStats | null>(null);
+
+  useEffect(() => {
+    fetch("http://localhost:8000/stats", {
+      headers: { "X-API-Key": "dev-token-change-me" },
+    })
+      .then((res) => res.json())
+      .then((data) => setStats(data))
+      .catch(() => setStats({ curated_links: 0, evidence_items: 0, categories: 0, tasks_active: 0 }));
+  }, []);
+
+  const statItems = [
+    { label: "Curated Links", value: stats?.curated_links ?? "—", icon: "📎", color: "from-purple-500 to-blue-500" },
+    { label: "Evidence Items", value: stats?.evidence_items ?? "—", icon: "📦", color: "from-blue-500 to-cyan-500" },
+    { label: "Categories", value: stats?.categories ?? "—", icon: "🏷️", color: "from-cyan-500 to-teal-500" },
+    { label: "Tasks Active", value: stats?.tasks_active ?? "—", icon: "📋", color: "from-teal-500 to-green-500" },
+  ];
+
   return (
     <div className="space-y-8">
       {/* Hero Section */}
@@ -52,7 +75,7 @@ export default function Dashboard() {
 
       {/* Stats Grid */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {stats.map((stat) => (
+        {statItems.map((stat) => (
           <div key={stat.label} className="group relative">
             <div className={`absolute inset-0 bg-gradient-to-r ${stat.color} rounded-2xl opacity-0 group-hover:opacity-20 transition-opacity blur-xl`} />
             <Card className="relative bg-zinc-900/80 backdrop-blur-sm border-zinc-800 hover:border-zinc-700 transition-all rounded-2xl overflow-hidden">
@@ -73,7 +96,7 @@ export default function Dashboard() {
       {/* Quick Actions */}
       <div>
         <h2 className="text-xl font-semibold text-zinc-200 mb-4">Quick Actions</h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
           {quickActions.map((action) => (
             <Link key={action.href} href={action.href} className="group">
               <div className="relative">

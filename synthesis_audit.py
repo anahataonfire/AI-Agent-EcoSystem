@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.graph.workflow import run_pipeline
 from src.core.evidence_store import EvidenceStore
 
-load_dotenv()
+load_dotenv(override=True)
 
 def run_stress_test():
     query = "Fetch the top 3 tech stories from TechCrunch (https://techcrunch.com/feed/) AND the top 3 from BBC Technology (http://feeds.bbci.co.uk/news/technology/rss.xml). Compare them. Identify if any company is mentioned in both. Provide one structured report with Source IDs for both feeds."

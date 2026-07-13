@@ -22,3 +22,44 @@ env/
 # Project specific
 data/*
 !data/test_suite.yaml
+
+# Debug and temp files
+debug_*.py
+test_date_filter.py
+output_*.txt
+**/dir_list.txt
+
+# Backup directories
+web-clean/
+weather-trading-old/
+weather-trading/weather-trading/
+
+# Nested repos / generated
+ralph-cli/demo/
+ralph-cli/node_modules/
+
+# Databases
+*.db
+
+# Trade logs (contain live trade data)
+trade_log.json
+**/trade_log.json
+
+# Generated exports
+codebase_export.md
+
+# Weather trading Node modules / build
+weather-trading/ui/node_modules/
+weather-trading/ui/.next/
+weather-trading/ui/package-lock.json
+
+# Node.js (all locations)
+node_modules/
+**/node_modules/
+**/.next/
+web/node_modules/
+web/.next/
+web/package-lock.json
+
+# Generated Next.js files
+web/next-env.d.ts

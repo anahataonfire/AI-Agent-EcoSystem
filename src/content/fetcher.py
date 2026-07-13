@@ -208,23 +208,110 @@ class ContentFetcher:
                 success=False, error=f"Reddit error: {e}"
             )
 
+    def _fetch_twitter_via_syndication(self, url: str) -> FetchResult:
+        """
+        Fetch X/Twitter content via public syndication API.
+        This API doesn't require authentication and has no rate limits.
+        """
+        import re
+        
+        try:
+            # Extract tweet ID from URL
+            match = re.search(r'/status/(\d+)', url)
+            if not match:
+                return FetchResult(
+                    url=url, title="", content="", content_hash="",
+                    success=False, error="Could not extract tweet ID from URL"
+                )
+            
+            tweet_id = match.group(1)
+            
+            # Use syndication API with token parameter
+            api_url = f"https://cdn.syndication.twimg.com/tweet-result?id={tweet_id}&lang=en&token=x"
+            headers = {
+                "User-Agent": self.USER_AGENT,
+                "Accept": "application/json",
+            }
+            
+            response = requests.get(api_url, headers=headers, timeout=self.TIMEOUT)
+            
+            if response.status_code != 200:
+                return FetchResult(
+                    url=url, title="", content="", content_hash="",
+                    success=False, error=f"Syndication API error: {response.status_code}"
+                )
+            
+            data = response.json()
+            
+            if not data or "__typename" not in data:
+                return FetchResult(
+                    url=url, title="", content="", content_hash="",
+                    success=False, error="Tweet not found or unavailable"
+                )
+            
+            # Check for tombstone (deleted/unavailable tweet)
+            if data.get("__typename") == "TweetTombstone":
+                tombstone_text = data.get("tombstone", {}).get("text", {}).get("text", "Tweet unavailable")
+                return FetchResult(
+                    url=url, title="", content="", content_hash="",
+                    success=False, error=f"Tweet unavailable: {tombstone_text}"
+                )
+            
+            # Extract tweet content
+            text = data.get("text", "")
+            user_data = data.get("user", {})
+            author_name = user_data.get("name", "Unknown")
+            author_handle = user_data.get("screen_name", "")
+            
+            if not text:
+                return FetchResult(
+                    url=url, title="", content="", content_hash="",
+                    success=False, error="Tweet has no text content"
+                )
+            
+            title = f"Tweet by {author_name} (@{author_handle})"
+            content_hash = f"sha256:{hashlib.sha256(text.encode()).hexdigest()}"
+            
+            return FetchResult(
+                url=url,
+                title=title,
+                content=text,
+                content_hash=content_hash,
+                success=True,
+            )
+            
+        except Exception as e:
+            return FetchResult(
+                url=url, title="", content="", content_hash="",
+                success=False, error=f"Syndication API error: {e}"
+            )
     
     def _fetch_twitter_via_api(self, url: str) -> FetchResult:
-        """Fetch X/Twitter content via official X API v2."""
+        """Fetch X/Twitter content - tries syndication API first, then official API."""
+        # First try the syndication API (no auth, no rate limits)
+        result = self._fetch_twitter_via_syndication(url)
+        if result.success:
+            return result
+        
+        # Fall back to official API v2
         import os
         import re
+        from urllib.parse import unquote
         
         bearer_token = os.environ.get("X_BEARER_TOKEN")
         if not bearer_token:
             # Try to load from dotenv
             try:
                 from dotenv import load_dotenv
-                load_dotenv()
+                load_dotenv(override=True)
                 bearer_token = os.environ.get("X_BEARER_TOKEN")
             except ImportError:
                 pass
         
         if not bearer_token:
+            # No token - fall back to browser if available
+            if self.use_browser:
+                return self._fetch_with_browser(url)
             return FetchResult(
                 url=url, title="", content="", content_hash="",
                 success=False, error="X_BEARER_TOKEN not set. Add to .env file."
@@ -242,6 +329,9 @@ class ContentFetcher:
             
             tweet_id = match.group(1)
             
+            # URL-decode the bearer token in case it contains %3D etc
+            bearer_token = unquote(bearer_token)
+            
             # Call Twitter API v2
             api_url = f"https://api.twitter.com/2/tweets/{tweet_id}"
             params = {
@@ -256,6 +346,21 @@ class ContentFetcher:
             }
             
             response = requests.get(api_url, params=params, headers=headers, timeout=self.TIMEOUT)
+            
+            # Handle rate limit and auth errors - fall back to browser
+            if response.status_code in (429, 401, 403):
+                if self.use_browser:
+                    return self._fetch_with_browser(url)
+                else:
+                    error_msg = {
+                        429: "X API rate limited (429)",
+                        401: "X API auth failed (401) - check token",
+                        403: "X API forbidden (403) - access denied"
+                    }.get(response.status_code, f"X API error ({response.status_code})")
+                    return FetchResult(
+                        url=url, title="", content="", content_hash="",
+                        success=False, error=f"{error_msg}. Enable browser fallback."
+                    )
             
             if response.status_code == 200:
                 data = response.json()

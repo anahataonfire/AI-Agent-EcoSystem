@@ -1,0 +1,108 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// Canonical listing from any source
+model Listing {
+  id                   String   @id @default(cuid())
+  
+  // Source tracking
+  source               String   // zillow|apartments|craigslist|pm_site|manual
+  sourceId             String?  // External ID from source
+  url                  String   @unique
+  
+  // Basic info
+  title                String
+  description          String?
+  
+  // Location
+  addressRaw           String?
+  buildingName         String?
+  lat                  Float?
+  lng                  Float?
+  neighborhoodLabel    String   // Waikiki|Ala Moana|Diamond Head|Downtown|Across Ala Wai|Unknown
+  
+  // Pricing
+  rentBase             Int      // Monthly base rent in dollars
+  feesParsed           String?  // JSON: { parking: number, utilities: number, other: number }
+  rentAllInEstimate    Int?     // Computed all-in cost, null if unknown
+  
+  // Unit details
+  beds                 Int
+  baths                Float    // Allow 1.5 baths
+  sqft                 Int?
+  
+  // Hard filters
+  parking              String   @default("unknown") // yes|no|unknown|street
+  parkingType          String?  // covered|garage|street|tandem
+  ac                   String   @default("unknown") // yes|no|unknown
+  acType               String?  // central|window|split|portable
+  wdInUnit             String   @default("unknown") // yes|no|unknown
+  
+  // Amenities & features
+  lanai                String   @default("unknown") // yes|no|unknown
+  outdoorSpace         String   @default("unknown") // private|shared|none|unknown
+  amenities            String   @default("[]") // JSON array: ["pool", "bbq", "pickleball", "gym"]
+  viewTags             String   @default("[]") // JSON array: ["ocean", "mountain", "city", "marina", "diamond_head", "canal"]
+  
+  // Media
+  photos               String   @default("[]") // JSON array of photo URLs
+  
+  // Dates
+  availableDate        DateTime?
+  postedDate           DateTime?
+  lastSeenDate         DateTime @default(now())
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  
+  // Pipeline status
+  status               String   @default("new") // new|shortlisted|contacted|touring|applied|rejected
+  notes                String?  // User notes
+  redFlags             String   @default("[]") // JSON array of red flag strings
+  
+  // Scoring
+  scoreTotal           Int      @default(0)
+  scoreBreakdown       String   @default("{}") // JSON: { view: 20, lanai: 15, ... }
+  
+  // Deduplication
+  dedupeKey            String?  // Computed hash for fuzzy matching
+  canonicalListingId   String?  // Points to master listing if this is a dupe
+  canonicalListing     Listing? @relation("Duplicates", fields: [canonicalListingId], references: [id])
+  duplicates           Listing[] @relation("Duplicates")
+  
+  @@index([neighborhoodLabel])
+  @@index([status])
+  @@index([scoreTotal])
+  @@index([rentBase])
+  @@index([canonicalListingId])
+}
+
+// User-starred buildings for watchlist
+model WatchedBuilding {
+  id           String   @id @default(cuid())
+  buildingName String   @unique
+  createdAt    DateTime @default(now())
+}
+
+// Scoring configuration (editable from UI)
+model ScoringConfig {
+  id        String   @id @default("default")
+  weights   String   // JSON: { view_ocean: 20, lanai: 20, ... }
+  updatedAt DateTime @updatedAt
+}
+
+// Scan history
+model ScanRun {
+  id             String   @id @default(cuid())
+  startedAt      DateTime @default(now())
+  completedAt    DateTime?
+  connector      String   // which connector ran
+  listingsFound  Int      @default(0)
+  newListings    Int      @default(0)
+  errors         String   @default("[]") // JSON array of error messages
+}

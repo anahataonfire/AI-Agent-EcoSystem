@@ -1,0 +1,138 @@
+{
+    "version": "1.0.0",
+    "fail_closed_default": "LIBRARY_ONLY",
+    "auto_topic_gate": {
+        "confidence_gte": 0.85,
+        "novelty_score_gte": 4,
+        "categories_allowlist": [
+            "agents",
+            "llm",
+            "architecture",
+            "security",
+            "trading",
+            "langgraph",
+            "rag"
+        ]
+    },
+    "deep_analysis_gate": {
+        "relevance_score_gte": 0.65,
+        "content_length_gte": 500,
+        "categories_any": [
+            "agents",
+            "llm",
+            "security",
+            "trading",
+            "architecture",
+            "research"
+        ],
+        "or_action_items_gte": 1,
+        "or_manual_tag": "deep"
+    },
+    "policies": [
+        {
+            "name": "datamart_high_confidence",
+            "priority": 1,
+            "match": {
+                "relevance_score_gte": 0.80,
+                "confidence_score_gte": 0.75,
+                "categories_any": [
+                    "agents",
+                    "llm",
+                    "architecture"
+                ],
+                "topic_match_exists": true
+            },
+            "route": "NOTEBOOKLM_DATAMART",
+            "actions": [
+                "STORE",
+                "ANALYZE",
+                "BUNDLE"
+            ]
+        },
+        {
+            "name": "datamart_auto_topic",
+            "priority": 2,
+            "match": {
+                "relevance_score_gte": 0.85,
+                "confidence_score_gte": 0.85,
+                "novelty_score_gte": 4,
+                "categories_any": [
+                    "agents",
+                    "llm",
+                    "architecture",
+                    "security",
+                    "trading",
+                    "langgraph",
+                    "rag"
+                ],
+                "topic_match_exists": false
+            },
+            "route": "NOTEBOOKLM_DATAMART",
+            "actions": [
+                "STORE",
+                "ANALYZE",
+                "BUNDLE",
+                "NOTIFY"
+            ],
+            "auto_create_topic": true
+        },
+        {
+            "name": "planner_actionable",
+            "priority": 3,
+            "match": {
+                "action_items_count_gte": 2,
+                "relevance_score_gte": 0.60,
+                "highest_priority_lte": 2
+            },
+            "route": "PLANNER_TASK",
+            "actions": [
+                "STORE",
+                "ANALYZE"
+            ],
+            "max_daily": 10
+        },
+        {
+            "name": "monitoring_trading",
+            "priority": 4,
+            "match": {
+                "categories_any": [
+                    "trading"
+                ],
+                "relevance_score_gte": 0.50,
+                "has_temporal_component": true
+            },
+            "route": "MONITORING",
+            "actions": [
+                "STORE"
+            ],
+            "monitoring_interval_hours": 24
+        },
+        {
+            "name": "knowledge_update",
+            "priority": 5,
+            "match": {
+                "relevance_score_gte": 0.85,
+                "confidence_score_gte": 0.80,
+                "categories_any": [
+                    "agents",
+                    "architecture",
+                    "security"
+                ]
+            },
+            "route": "KNOWLEDGE_UPDATE",
+            "actions": [
+                "STORE",
+                "ANALYZE"
+            ]
+        },
+        {
+            "name": "default_library",
+            "priority": 99,
+            "match": {},
+            "route": "LIBRARY_ONLY",
+            "actions": [
+                "STORE"
+            ]
+        }
+    ]
+}

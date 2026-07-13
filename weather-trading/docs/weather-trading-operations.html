@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Order lifecycle, profit gates, override controls, backtests, and verified operating procedures.">
+<meta name="doc-type" content="reference">
+<meta name="doc-version" content="1.0">
+<meta name="doc-updated" content="2026-07-11">
+<meta name="design-palette" content="graphite-vermilion-newsprint">
+<meta name="design-mode" content="originate">
+<title>Weather Trading · Operations and Profit Validation</title>
+<!-- codex-html-doc-design-intent {"schema":"codex-html-doc/design-intent/v1","mode":"originate","source":null,"palette":"graphite-vermilion-newsprint","theme":"technical","signature":"A dual-rail state map that separates reserved capital, confirmed fills, settlement, and profit eligibility.","boldness":"A full-width order lifecycle rail anchors the page and visibly distinguishes money states.","anti_generic":"Avoid generic KPI cards and trading hype; every visual element must explain bankroll truth, gate logic, an override, or reproducibility evidence.","density":"compact","navigation":"sidebar"} -->
+<style>
+/* Explicit palette: graphite-vermilion-newsprint. No silent house default. */
+:root{
+  --bg:#ECE9E1;
+  --panel:#FAF8F2;
+  --ink:#202225;
+  --muted:#66635D;
+  --line:#C9C2B6;
+  --accent:#C43D2C;
+  --accent2:#39434B;
+  --danger:#A32323;
+  --code:#202225;
+}
+:root{
+  --bg:#f7f4ed;
+  --panel:#fffdf8;
+  --ink:#1c2423;
+  --muted:#60706c;
+  --line:#d8cdb8;
+  --accent:#8a5a14;
+  --accent-2:#11645a;
+  --danger:#9d332b;
+  --code:#102b2b;
+  --radius:8px;
+  --page:1120px;
+  --sans:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
+  --serif:Georgia,"Times New Roman",serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;
+  color:var(--ink);
+  background:linear-gradient(180deg,#fbf8ef 0%,var(--bg) 44%,#f1eadc 100%);
+  font:16px/1.62 var(--sans);
+  /* Never hide layout defects globally. Scrolling belongs on the specific wide component. */
+}
+a{color:var(--accent-2);text-decoration-thickness:1px;text-underline-offset:3px}
+code{font-family:var(--mono);font-size:.92em;color:var(--code);overflow-wrap:anywhere}
+code.cmd{display:inline-block;max-width:100%;border:1px solid var(--line);border-radius:6px;padding:1px 5px;background:#fff8e8;color:#5e410f;font-size:.82rem;white-space:normal}
+pre{max-width:100%;overflow-x:auto;padding:14px 16px;border:1px solid var(--line);border-radius:var(--radius);background:#102b2b;color:#e9fff7;font:.88rem/1.55 var(--mono)}
+pre code{color:inherit}
+:focus-visible{outline:3px solid #0c8072;outline-offset:3px;border-radius:6px}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.skip-link{position:absolute;left:12px;top:-48px;z-index:10;background:#102b2b;color:#fff;padding:8px 12px;border-radius:6px}
+.skip-link:focus{top:12px}
+.progress{position:fixed;left:0;top:0;height:3px;width:0;background:linear-gradient(90deg,var(--accent),var(--accent-2));z-index:20}
+.wrap{max-width:var(--page);margin:0 auto;padding:0 24px}
+.topbar{position:sticky;top:0;z-index:9;background:rgba(247,244,237,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+.topbar .wrap{display:flex;align-items:center;gap:14px;min-height:50px}
+.topbar .wrap.scrollnav{overflow-x:auto;white-space:nowrap;scrollbar-width:thin}
+.brand{display:inline-flex;align-items:center;min-height:32px;font:700 .82rem/1.2 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);text-decoration:none}
+.navlink{display:inline-flex;align-items:center;min-height:32px;font-size:.9rem;color:var(--ink);text-decoration:none}
+.hero{padding:44px 0 30px;border-bottom:1px solid var(--line)}
+.eyebrow{margin:0 0 10px;color:var(--accent);font:700 .76rem/1 var(--mono);letter-spacing:.11em;text-transform:uppercase}
+h1{margin:0;max-width:15ch;font:650 clamp(2.15rem,5vw,4rem)/1.02 var(--serif);letter-spacing:0;text-wrap:balance}
+.lead{max-width:68ch;margin:18px 0 0;color:#34423f;font-size:1.08rem}
+.meta-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}
+.meta{display:inline-flex;align-items:center;min-height:28px;border:1px solid var(--line);border-radius:999px;padding:4px 10px;background:rgba(255,253,248,.7);font:700 .78rem/1 var(--mono);color:var(--muted)}
+.meta.ver{border-color:#c09443;color:#6f470d;background:#fff8e8}
+main{padding:18px 0 44px}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:34px}
+.toc{position:sticky;top:70px;align-self:start;border-left:1px solid var(--line);padding-left:14px;color:var(--muted);font-size:.9rem}
+.toc a{display:flex;align-items:center;min-height:28px;margin:4px 0;color:var(--muted);text-decoration:none}
+.toc a[aria-current="true"]{color:var(--accent-2);font-weight:700}
+section.block{padding:18px 0;border-top:1px solid var(--line);scroll-margin-top:76px}
+section.block:first-child{border-top:0}
+h2{margin:0 0 8px;font:650 1.65rem/1.15 var(--serif);text-wrap:balance}
+h3{margin:24px 0 8px;font:650 1.1rem/1.25 var(--serif);color:var(--accent)}
+.prose{max-width:74ch}
+.callout{margin:16px 0;padding:14px 16px;border:1px solid var(--line);border-left:4px solid var(--accent-2);border-radius:var(--radius);background:var(--panel)}
+.callout strong{display:block;margin-bottom:4px;color:var(--accent-2);font:800 .76rem/1 var(--mono);letter-spacing:.08em;text-transform:uppercase}
+details.more{margin:12px 0}
+details.more>summary{cursor:pointer;color:var(--accent-2);font-weight:700}
+.grid-wrap{overflow-x:auto;margin:14px 0}
+table.grid{width:100%;border-collapse:collapse;min-width:520px;background:var(--panel)}
+.grid th,.grid td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.grid td,.chart td,.num{font-variant-numeric:tabular-nums} /* aligned digits (2026-07-03, shared with html-doc) */
+.grid th{font:800 .76rem/1.2 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+.badge{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:4px 9px;font:800 .76rem/1.4 var(--mono);text-transform:uppercase}
+.badge.high{border-color:#d8a19c;color:var(--danger);background:#fff1ef}
+.badge.ok{border-color:#9fcac4;color:var(--accent-2);background:#edf9f6}
+.badge.crit{border-color:#bd6b64;color:#7a1711;background:#fff0ee}
+.badge.warn{border-color:#dfbd7b;color:#76500c;background:#fff8e8}
+.rank{width:1%;white-space:nowrap;color:var(--muted);font:800 .78rem/1 var(--mono)}
+.score{display:inline-flex;align-items:center;justify-content:center;width:2rem;height:2rem;border-radius:999px;border:1px solid var(--line);font:800 .78rem/1 var(--mono);background:#f7f4ed;color:var(--ink)}
+.score.high{border-color:#d8a19c;color:var(--danger);background:#fff1ef}
+.score.mid{border-color:#dfbd7b;color:#76500c;background:#fff8e8}
+.score.low{border-color:#9fcac4;color:var(--accent-2);background:#edf9f6}
+.gloss-wrap{position:relative;display:inline}
+.gloss{appearance:none;border:0;border-bottom:1px dotted var(--accent);padding:0;background:none;color:#7b500f;font:inherit;cursor:help}
+.gloss-pop{position:absolute;left:0;top:1.7em;z-index:8;width:min(300px,82vw);padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius);background:#fffdf8;box-shadow:0 12px 32px rgba(0,0,0,.16);font-size:.88rem;color:var(--ink);opacity:0;visibility:hidden;transform:translateY(-3px);transition:opacity .12s ease,transform .12s ease}
+.gloss-wrap:hover .gloss-pop,.gloss-wrap:focus-within .gloss-pop{opacity:1;visibility:visible;transform:none}
+.controls{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
+.controls button{appearance:none;border:1px solid var(--line);border-radius:999px;background:var(--panel);color:var(--ink);padding:6px 10px;font:800 .76rem/1 var(--mono);cursor:pointer}
+.controls button.active,.controls button[aria-pressed="true"]{border-color:#9fcac4;color:var(--accent-2);background:#edf9f6}
+tr.hidden{display:none}
+.decision-band{display:grid;grid-template-columns:minmax(9rem,.7fr) minmax(0,2fr);gap:16px;margin:18px 0;padding:18px;border-top:5px solid var(--accent);background:var(--panel);box-shadow:0 10px 28px rgba(20,28,25,.08)}
+.decision-band .verdict{font:750 clamp(1.35rem,3vw,2.25rem)/1.05 var(--serif);color:var(--accent-2)}
+.evidence-pair{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:16px 0}.evidence-pair>*{padding:14px;border:1px solid var(--line);background:var(--panel)}
+.finding-rail{display:grid;grid-template-columns:4rem minmax(10rem,.8fr) minmax(0,2fr);gap:12px;padding:14px 0;border-top:1px solid var(--line)}
+.finding-rail .finding-id{font:800 .78rem/1 var(--mono);color:var(--accent)}
+.implementation-ledger{border-left:4px solid var(--accent-2);padding-left:14px}
+.diagram-text-path{margin-top:12px;padding:12px 14px;border-left:3px solid var(--accent-2);background:color-mix(in srgb,var(--panel) 88%,var(--accent-2))}
+.chart,.exhibit{margin:18px 0;padding:14px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel)}
+.chart figcaption,.exhibit figcaption{font-weight:800;color:var(--ink);margin:0 0 6px}
+.chart svg,.exhibit svg{display:block;max-width:100%;height:auto;color:var(--ink)}
+.chart table{width:100%;border-collapse:collapse;margin-top:8px}
+.chart th,.chart td{border-bottom:1px solid var(--line);padding:8px;text-align:left}
+.sparkline{vertical-align:-.35em}
+.diagram-scroll{max-width:100%;overflow-x:auto;padding-bottom:4px}
+.mermaid-svg svg{max-width:100%;height:auto}
+.exhibit .sub{margin:0 0 10px;color:var(--muted);font-size:.92rem}
+footer{padding:24px 0 42px;border-top:1px solid var(--line);color:var(--muted);font:.84rem/1.5 var(--mono)}
+@media(max-width:860px){
+  .layout{display:block}
+  .toc{position:static;border-left:0;border-top:1px solid var(--line);padding:10px 0;margin-bottom:12px}
+  .gloss-pop{position:fixed;left:16px;right:16px;top:auto;bottom:18px;width:auto;max-width:none}
+}
+@media(max-width:520px){
+  .wrap{padding:0 16px}
+  .topbar .wrap{flex-wrap:wrap;padding-top:10px;padding-bottom:10px}
+  table.grid{min-width:0;table-layout:fixed}
+  .grid th,.grid td{padding:8px;overflow-wrap:anywhere;font-size:.82rem}
+  .gloss-pop{position:fixed;left:16px;right:16px;top:auto;bottom:18px;width:auto;max-width:none}
+  .decision-band,.evidence-pair,.finding-rail{grid-template-columns:1fr}
+}
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}
+}
+@media print{
+  body{background:#fff;color:#111}
+  .progress,.topbar,.skip-link,.toc{display:none!important}
+  .wrap{max-width:none;padding:0}
+  .hero{padding:0 0 12px;border-bottom:1px solid #ccc}
+  h1,h2,h3{color:#111}
+  section.block,.callout,table.grid,pre,.chart,.exhibit{break-inside:avoid}
+  details.more{display:block}
+  details.more[open],details.more:not([open]){display:block}
+  .gloss-pop{position:static!important;visibility:visible!important;opacity:1!important;display:inline!important;box-shadow:none;border:0;padding:0 0 0 4px;color:#333;font-style:italic}
+  .gloss-pop:before{content:"("}.gloss-pop:after{content:")"}
+  a[href^="http"]:after{content:" (" attr(href) ")";font-size:.82em;color:#555;word-break:break-all}
+}
+
+/* Technical: denser reference rhythm, mono wayfinding, high diagram/code legibility. */
+:root{--serif:var(--sans);--page:1280px}body{line-height:1.55}.hero{background:linear-gradient(135deg,#102b2b 0 72%,#39434b 72%)}
+.hero h1,.hero .lead,.hero .eyebrow{color:var(--panel)}h1{font-weight:720;letter-spacing:-.025em}section.block{padding:16px 0}.toc{font-family:var(--mono)}
+.topbar .wrap{overflow-x:auto;white-space:nowrap;scrollbar-width:thin}
+
+.layout-wide{display:block}.layout-wide+.toc{position:static}
+</style>
+</head>
+<body data-doc-type="reference" data-design-mode="originate" data-theme="technical" data-density="compact" data-nav-mode="sidebar">
+<div class="progress" id="progress" aria-hidden="true"></div>
+<a class="skip-link" href="#main">Skip to content</a>
+<nav class="topbar" aria-label="Document"><div class="wrap"><a class="brand" href="#main">Weather Trading · Operations and Profit Validation</a><a class="navlink" href="#summary">Summary</a></div></nav>
+<header class="hero"><div class="wrap">
+<p class="eyebrow">Reference / 2026-07-11</p>
+<h1>Weather Trading<br>Operations and Profit Validation</h1>
+<p class="lead">Order lifecycle, profit gates, override controls, backtests, and verified operating procedures.</p>
+<div class="meta-row"><span class="meta ver" id="docver" title="document version · last updated">v1.0 · 2026-07-11</span><span class="meta">single file</span><span class="meta">no CDN</span><span class="meta">voice: econ</span></div>
+</div></header>
+<main id="main"><div class="wrap layout">
+<article id="summary">
+<section class="block" id="operating-truth"><h2>Operating truth</h2>
+<div class="decision-band"><div class="verdict">Forward test, do not scale yet.</div><div><strong>The ledger is now honest.</strong> The current database has 0 verified fills, 1,325 quarantined legacy records, and 36 active reservations totaling $2,391. Historical outcomes remain available for provisional research, but they do not count as portfolio positions, win rate, or realized P&amp;L.</div></div>
+<p class="prose">A <span class="gloss-wrap"><button type="button" class="gloss" aria-describedby="g-reservation">reservation</button><span class="gloss-pop" role="tooltip" id="g-reservation">Cash committed to an active order that has not yet become a confirmed fill.</span></span> is not a position. A <span class="gloss-wrap"><button type="button" class="gloss" aria-describedby="g-confirmed">confirmed fill</button><span class="gloss-pop" role="tooltip" id="g-confirmed">An authenticated trade event whose exchange status is CONFIRMED and whose trade ID is recorded exactly once.</span></span> creates portfolio exposure. A <span class="gloss-wrap"><button type="button" class="gloss" aria-describedby="g-hard-bound">hard bound</button><span class="gloss-pop" role="tooltip" id="g-hard-bound">An observed daily high or low that can only move in one direction and has already made one bucket impossible.</span></span> must come from the exact station named by the market rules. Conditional fee-net winning payoff is not expected value. No calibrated win probability exists yet.</p>
+<div class="grid-wrap"><table class="grid"><thead><tr><th>Ledger cohort</th><th>Rows</th><th>Portfolio treatment</th><th>Permitted use</th></tr></thead><tbody>
+<tr><td>Verified fills</td><td class="num">0</td><td>Counts in deployed capital and verified P&amp;L</td><td>Forward profitability evidence when outcomes resolve</td></tr>
+<tr><td>Legacy outcomes</td><td class="num">917</td><td>Excluded; original WON/LOST and P&amp;L preserved</td><td>Hypothesis generation only</td></tr>
+<tr><td>Legacy unresolved</td><td class="num">408</td><td>Excluded; original status unavailable on the staged migration and marked UNKNOWN</td><td>Audit trail only</td></tr>
+<tr><td>Active local orders</td><td class="num">36 / $2,391</td><td>Reserved, not deployed</td><td>Reconcile or cancel before new live risk</td></tr>
+</tbody></table></div>
+</section>
+
+<section class="block" id="order-lifecycle"><h2>Order lifecycle</h2>
+<figure class="exhibit"><figcaption>Money moves only on confirmed trade events</figcaption><p class="sub">The bold rail separates order commitment from economic ownership.</p>
+<div class="diagram-scroll"><svg viewBox="0 0 940 250" role="img" aria-labelledby="life-title life-desc"><title id="life-title">Order and position lifecycle</title><desc id="life-desc">Submitted, live, matched, and mined states reserve cash. Distinct confirmed trade events aggregate into partial or full positions. Cancellation and failure release only the unfilled reservation. Settlement creates fee-net realized profit or loss.</desc>
+<defs><marker id="life-arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="#39434B"></path></marker></defs>
+<path d="M90 90 H850" stroke="#39434B" stroke-width="5" fill="none"></path>
+<g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" text-anchor="middle"><g fill="#fffdf8" stroke="#39434B" stroke-width="2"><rect x="25" y="55" width="130" height="70" rx="8"></rect><rect x="190" y="55" width="130" height="70" rx="8"></rect><rect x="355" y="55" width="130" height="70" rx="8"></rect><rect x="520" y="55" width="150" height="70" rx="8"></rect><rect x="705" y="55" width="170" height="70" rx="8"></rect></g>
+<g fill="#202225"><text x="90" y="83" font-weight="700">SUBMITTED / LIVE</text><text x="90" y="105">reserve full cash</text><text x="255" y="83" font-weight="700">MATCHED / MINED</text><text x="255" y="105">still nonterminal</text><text x="420" y="83" font-weight="700">TRADE CONFIRMED</text><text x="420" y="105">stable trade ID</text><text x="595" y="83" font-weight="700">PARTIAL / FULL</text><text x="595" y="105">actual cost position</text><text x="790" y="83" font-weight="700">WON / LOST</text><text x="790" y="105">fee-net realized P&amp;L</text></g></g>
+<path d="M420 130 V185 H255" stroke="#C43D2C" stroke-width="2.5" fill="none" marker-end="url(#life-arrow)"></path><text x="338" y="207" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#A32323">FAILED match: keep/reopen reservation</text>
+<path d="M595 130 V185 H730" stroke="#C43D2C" stroke-width="2.5" fill="none" marker-end="url(#life-arrow)"></path><text x="670" y="207" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#A32323">CANCELED: retain confirmed part, release remainder</text>
+</svg></div><p class="diagram-text-path">Text path: an accepted order reserves cash. MATCHED and MINED do not create a position. Authenticated CONFIRMED trade IDs aggregate idempotently; partial fills retain only the remaining limit-price reservation. A confirmed or confirmed-then-canceled position may resolve once, and its outcome cannot be flipped.</p></figure>
+<h3>Automatic and manual reconciliation</h3><p class="prose">While live mode is enabled, each dashboard order poll fetches the authenticated trade ledger once, filters it per local order, applies order snapshots, and aggregates confirmed trade IDs. The Orders view also exposes a manual Reconcile action. Cancellation changes local state only when the exchange response lists that exact order ID in <code class="cmd">canceled</code>.</p>
+</section>
+
+<section class="block" id="profit-screen"><h2>Profit screen</h2>
+<p class="prose">The 90-95¢ entry band is a configurable forward test. It is not a proven edge. The market must accept orders. The fee must be known. Settlement basis must be trusted, unless an exact station has already eliminated the bucket. Risk, exposure, payoff, book depth, and the fresh quote must also pass their configured limits.</p>
+<div class="grid-wrap"><table class="grid"><thead><tr><th>Gate</th><th>Default</th><th>Override surface</th><th>Failure behavior</th></tr></thead><tbody>
+<tr><td>Entry price</td><td>0.90-0.95</td><td><code class="cmd">--price-floor</code>, <code class="cmd">--price-ceiling</code></td><td>Excluded from the cohort</td></tr>
+<tr><td>Fee-net winning payoff</td><td>Configurable minimum</td><td><code class="cmd">--min-net-win-return-pct</code></td><td>Unknown fee fails closed</td></tr>
+<tr><td>Settlement basis</td><td>ROOM + TRUSTED</td><td>CLI requirements or explicit allow flags</td><td>Unverified signals remain visible, not automatic</td></tr>
+<tr><td>Exposure</td><td>$150 opportunity / $300 event</td><td>Dashboard settings, API settings, per-trade override</td><td>Filled cost plus active reservations count together</td></tr>
+<tr><td>Order mode</td><td>GTC</td><td>Dashboard, API, <code class="cmd">--order-mode</code></td><td>POST_ONLY joins the bid and uses maker-zero platform fee</td></tr>
+<tr><td>Freshness</td><td>15 min / $0.02</td><td>Dashboard settings or one-off trade override</td><td>Missing live quote always fails closed</td></tr>
+</tbody></table></div>
+<div class="callout"><strong>Fee model</strong>For a taker buying <em>C</em> shares at price <em>p</em>, the modeled platform fee is <code class="cmd">C × feeRate × p × (1 − p)</code>. Post-only maker orders model zero platform fee. Builder fees are outside this model unless separately configured.</div>
+<h3>New opportunity classes</h3><ul class="prose"><li><strong>Exact-station hard bounds:</strong> only a market rule that names a <code class="cmd">weather.gov</code> station can eliminate a bucket. Wunderground and unknown sources remain inert.</li><li><strong>Complete-set signals:</strong> all YES buckets must share one Gamma event ID, include both tails, cover the integer range without gaps or overlaps, accept orders, and remain profitable after fee and slippage guards. Signals are non-executing by default.</li><li><strong>Maker cohort:</strong> post-only orders join a non-crossing bid and remain reservations until confirmed; they can improve fee economics but introduce fill-selection risk.</li></ul>
+</section>
+
+<section class="block" id="backtest"><h2>Backtest and evidence</h2>
+<div class="grid-wrap"><table class="grid"><thead><tr><th>Cohort</th><th>All / band trades</th><th>90-95¢ modeled ROI</th><th>Interpretation</th></tr></thead><tbody><tr><td>Legacy train</td><td class="num">545 / 49</td><td class="num">+0.96%</td><td>Provisional; requested size substitutes for confirmed actual cost</td></tr><tr><td>Legacy test</td><td class="num">372 / 74</td><td class="num">+3.47%</td><td>Chronological holdout; still unverified fill history</td></tr><tr><td>Verified train/test</td><td class="num">0 / 0</td><td>Not available</td><td>No forward profitability claim is supportable yet</td></tr></tbody></table></div>
+<p class="prose">The displayed sensitivity uses a 500 bps fee parameter and 20 bps slippage. The script supports custom bands, fee rates, slippage, database path, output path, and chronological split. Stored legacy P&amp;L is not silently treated as confirmed execution truth.</p>
+<pre><code>./.venv/bin/python scripts/backtest_profit_strategy.py \
+  --band 0.90:0.95 --fee-bps 500 --slippage-bps 20 \
+  --output reports/profit_strategy_backtest.json</code></pre>
+</section>
+
+<section class="block" id="runbook"><h2>Runbook</h2>
+<h3>1. Validate offline</h3><pre><code>PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m pytest -p no:cacheprovider
+PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin npm --prefix ui exec tsc -- --noEmit --incremental false</code></pre>
+<h3>2. Inspect money truth</h3><pre><code>curl -fsS http://127.0.0.1:8000/api/status
+curl -fsS http://127.0.0.1:8000/api/stats</code></pre>
+<h3>3. Run paper automation</h3><pre><code>./.venv/bin/python auto_harvest.py --no-vpn \
+  --price-floor 0.90 --price-ceiling 0.95 --order-mode POST_ONLY</code></pre>
+<p class="prose">Paper mode writes only the local run log. Synchronizing a live-run summary to bdc-fabric requires explicit <code class="cmd">--sync-bdc-fabric</code>; dry-run cannot trigger that external write.</p>
+<h3>4. Before live mode</h3><ol class="prose"><li>Reconcile or cancel the 36 legacy LIVE orders; their $2,391 reservation currently exceeds the configured $1,000 bankroll.</li><li>Complete a fresh scan and confirm fee, station provenance, accepting-orders, book depth, and event exposure.</li><li>Keep the cohort small until verified fills resolve and both realized ROI and calibration clear a predeclared threshold.</li></ol>
+</section>
+
+<section class="block" id="controls"><h2>Override controls</h2>
+<p class="prose">No new strategy default is a hidden lock. Runtime settings expose bankroll, opportunity cap, event cap, maximum scan age, re-quote tolerance, and default order mode. Automation exposes bidirectional boolean flags such as <code class="cmd">--allow-open-buckets</code>/<code class="cmd">--no-allow-open-buckets</code>. API trade gates accept <code class="cmd">override:true</code> for deliberate one-offs; absence of a live quote and missing authenticated identity remain execution errors, not tunable preferences.</p>
+<details class="more"><summary>Known validation boundary</summary><p class="prose">Offline regression covers lifecycle transitions, fee math, hard-bound provenance, complete-set coverage, canonical event exposure, maker pricing, and provisional/verified backtest separation. A current live dry scan was stopped after roughly 75 seconds while upstream forecasts were still loading, so current-market candidate counts and live nowcast availability remain unverified in this release. No live orders were submitted.</p></details>
+</section>
+</article>
+<aside class="toc" aria-label="Table of contents" data-nav-mode="sidebar"><a href="#operating-truth">Operating truth</a><a href="#order-lifecycle">Order lifecycle</a><a href="#profit-screen">Profit screen</a><a href="#backtest">Backtest</a><a href="#runbook">Runbook</a><a href="#controls">Override controls</a></aside>
+</div></main>
+<footer><div class="wrap">Built with codex-html-doc / weather-trading-operations / v1.0 · 2026-07-11</div></footer>
+<script>
+(function(){
+  var bar=document.getElementById("progress");
+  if(!bar) return;
+  function update(){
+    var d=document.documentElement;
+    var max=d.scrollHeight-d.clientHeight;
+    bar.style.width=(max>0 ? (d.scrollTop/max*100) : 0)+"%";
+  }
+  addEventListener("scroll",update,{passive:true});
+  addEventListener("resize",update,{passive:true});
+  update();
+})();
+
+(function(){
+  var links=[].slice.call(document.querySelectorAll(".toc a[href^='#']"));
+  if(!links.length || !("IntersectionObserver" in window)) return;
+  var map={};
+  links.forEach(function(a){map[a.getAttribute("href").slice(1)]=a;});
+  var obs=new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if(!e.isIntersecting) return;
+      links.forEach(function(l){l.removeAttribute("aria-current");});
+      var a=map[e.target.id];
+      if(a) a.setAttribute("aria-current","true");
+    });
+  },{rootMargin:"-20% 0px -70% 0px",threshold:0});
+  [].forEach.call(document.querySelectorAll("section[id]"),function(s){
+    if(map[s.id]) obs.observe(s);
+  });
+})();
+
+(function(){
+  function setAll(open){
+    [].forEach.call(document.querySelectorAll("details"),function(d){
+      if(open){
+        d.dataset.wasOpen=d.open ? "1" : "0";
+        d.open=true;
+      }else{
+        d.open=d.dataset.wasOpen==="1";
+      }
+    });
+  }
+  addEventListener("beforeprint",function(){setAll(true);});
+  addEventListener("afterprint",function(){setAll(false);});
+})();
+
+(function(){
+  [].forEach.call(document.querySelectorAll(".controls[data-filter-group]"),function(group){
+    var table=document.getElementById(group.getAttribute("data-filter-group")+"Table");
+    if(!table) return;
+    var rows=[].slice.call(table.querySelectorAll("tbody tr, [data-filter]"));
+    var buttons=[].slice.call(group.querySelectorAll("button[data-filter]"));
+    function apply(filter){
+      buttons.forEach(function(button){
+        var active=button.getAttribute("data-filter")===filter;
+        button.classList.toggle("active",active);
+        button.setAttribute("aria-pressed",active ? "true" : "false");
+      });
+      rows.forEach(function(row){
+        row.classList.toggle("hidden",filter!=="all" && row.getAttribute("data-filter")!==filter);
+      });
+    }
+    buttons.forEach(function(button){
+      button.setAttribute("aria-pressed",button.classList.contains("active") ? "true" : "false");
+      button.addEventListener("click",function(){apply(button.getAttribute("data-filter") || "all");});
+    });
+  });
+})();
+
+</script>
+</body>
+</html>

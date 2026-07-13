@@ -24,7 +24,7 @@ import urllib.error
 # Load .env file if present
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(override=True)
 except ImportError:
     pass  # dotenv not installed, rely on environment variables
 

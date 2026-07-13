@@ -8,13 +8,18 @@ const navItems = [
     { href: "/", label: "Dashboard", icon: "🏠" },
     { href: "/inbox", label: "Inbox", icon: "📥" },
     { href: "/library", label: "Library", icon: "📚" },
+    { href: "/datamarts", label: "Datamarts", icon: "📦" },
     { href: "/planner", label: "Planner", icon: "📋" },
     { href: "/research", label: "Research", icon: "🔬" },
     { href: "/learning", label: "Learning", icon: "📈" },
     { href: "/mission", label: "Mission Control", icon: "🚀" },
     { href: "/polymarket", label: "Polymarket", icon: "🎯" },
+    { href: "/weather", label: "Weather Trading", icon: "🌡️" },
+    { href: "/follow-trader", label: "Follow Trader", icon: "👤" },
+    { href: "/informatica", label: "Informatica Docs", icon: "📄" },
     { href: "/hangar", label: "The Hangar", icon: "🛫" },
     { href: "/architecture", label: "Architecture", icon: "🏗️" },
+    { href: "/health", label: "Health", icon: "💊" },
     { href: "/advisor", label: "Advisor", icon: "🧠" },
 ];
 
@@ -59,8 +64,8 @@ export function Navigation() {
                                 key={item.href}
                                 href={item.href}
                                 className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all group ${isActive
-                                        ? "bg-gradient-to-r from-purple-500/20 to-blue-500/20 border border-purple-500/30 text-white"
-                                        : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/50"
+                                    ? "bg-gradient-to-r from-purple-500/20 to-blue-500/20 border border-purple-500/30 text-white"
+                                    : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/50"
                                     }`}
                             >
                                 <span className="text-lg group-hover:scale-110 transition-transform">{item.icon}</span>

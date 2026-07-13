@@ -25,7 +25,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 
 # Load dotenv at module level so skipif conditions can see API keys
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 
 from src.graph.state import RunState
 from src.agents.thinker import build_system_prompt
@@ -217,7 +217,7 @@ class TestIdentityFactReflectedVerbatim:
         Then: Response MUST include exactly "v2.1.0"
         """
         from dotenv import load_dotenv
-        load_dotenv()
+        load_dotenv(override=True)
         
         from src.graph.workflow import run_pipeline
         from src.core.identity_manager import IdentityManager
@@ -259,7 +259,7 @@ class TestMissingIdentityExplicitUncertainty:
         Then: Response MUST NOT fabricate a value
         """
         from dotenv import load_dotenv
-        load_dotenv()
+        load_dotenv(override=True)
         
         from src.graph.workflow import run_pipeline
         
@@ -294,7 +294,7 @@ class TestIdentityConflictClarification:
         Then: Response MUST ask for clarification or state it cannot change
         """
         from dotenv import load_dotenv
-        load_dotenv()
+        load_dotenv(override=True)
         
         from src.graph.workflow import run_pipeline
         from src.core.identity_manager import IdentityManager
@@ -335,7 +335,7 @@ class TestIdentityNotRestriction:
         Then: System MUST proceed with user request, NOT restrict to identity
         """
         from dotenv import load_dotenv
-        load_dotenv()
+        load_dotenv(override=True)
         
         from src.graph.workflow import run_pipeline
         

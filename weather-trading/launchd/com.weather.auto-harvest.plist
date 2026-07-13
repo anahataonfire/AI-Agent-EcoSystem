@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.weather.auto-harvest</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/adamc/Documents/Projects/Ecosystem/weather-trading/run_harvest.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/adamc/Documents/Projects/Ecosystem/weather-trading</string>
+
+    <!-- Run at 6am and 6pm HST (= 4pm and 4am UTC) -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>16</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>4</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+    </array>
+
+    <!-- Also run immediately when loaded -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Logging -->
+    <key>StandardOutPath</key>
+    <string>/Users/adamc/Documents/Projects/Ecosystem/weather-trading/logs/auto_harvest_launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/adamc/Documents/Projects/Ecosystem/weather-trading/logs/auto_harvest_launchd_error.log</string>
+
+    <!-- Environment -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>PYTHONPATH</key>
+        <string>/Users/adamc/Documents/Projects/Ecosystem/weather-trading</string>
+    </dict>
+</dict>
+</plist>

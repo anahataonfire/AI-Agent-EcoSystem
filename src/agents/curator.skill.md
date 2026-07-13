@@ -14,6 +14,9 @@
 - `score_relevance`: Rate relevance to AI EcoSystem (0-1)
 - `suggest_actions`: Identify potential improvements/corrections
 - `write_content_store`: Store processed content entries
+- `deep_analysis`: Perform deep semantic analysis and routing
+- `routing_evaluation`: Evaluate routing policies for content
+- `write_datamart_bundle`: Write content to knowledge datamarts
 
 ### DENIED
 - `execute_trade`: No trading operations

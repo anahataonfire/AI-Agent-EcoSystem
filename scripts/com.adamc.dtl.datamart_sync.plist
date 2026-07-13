@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.adamc.dtl.datamart_sync</string>
+    
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0/scripts/sync_datamarts.sh</string>
+    </array>
+    
+    <key>WorkingDirectory</key>
+    <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0</string>
+    
+    <key>StandardOutPath</key>
+    <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0/logs/launchd.stdout.log</string>
+    
+    <key>StandardErrorPath</key>
+    <string>/Users/adamc/Documents/001 AI Agents/AI Agent EcoSystem 2.0/logs/launchd.stderr.log</string>
+    
+    <!-- Run every 2 hours (7200 seconds) -->
+    <key>StartInterval</key>
+    <integer>7200</integer>
+    
+    <key>RunAtLoad</key>
+    <true/>
+    
+    <key>KeepAlive</key>
+    <false/>
+</dict>
+</plist>

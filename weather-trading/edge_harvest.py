@@ -1,0 +1,1052 @@
+"""
+Edge Harvest Scanner (consolidated)
+
+Finds near-certain small-margin trades: BUY NO on buckets far from forecast,
+BUY YES on buckets containing the forecast. Both sides produce high-price
+low-return trades when model and market strongly agree on directional outcome.
+Includes risk detection for forecast uncertainty (model spread, fronts).
+
+This is the single canonical implementation. Previously split across
+edge_harvest.py and edge_harvest_scanner.py (retired in PD-144 R2).
+YES-side symmetry added in PD-195.
+"""
+
+import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import List, Optional, Tuple
+
+from strategy import calculate_return_metrics
+from identifiers import canonical_event_key
+
+logger = logging.getLogger(__name__)
+
+
+# PD-221: cached read-only V2 ClobClient for orderbook reads.
+# No key required (orderbook reads are public per Polymarket V2 docs).
+# Avoids per-call PolymarketExecutor reinstantiation + credential-derive
+# network call that was the V1→V2 migration breakage in _fetch_order_book.
+# Codex Falsifier F2 polish: double-check lock prevents duplicate construction.
+_RO_CLIENT = None
+_RO_CLIENT_LOCK = threading.Lock()
+
+
+def _get_ro_client():
+    """Cached read-only V2 ClobClient for orderbook reads."""
+    global _RO_CLIENT
+    if _RO_CLIENT is None:
+        with _RO_CLIENT_LOCK:
+            if _RO_CLIENT is None:
+                from py_clob_client_v2 import ClobClient
+                _RO_CLIENT = ClobClient(host="https://clob.polymarket.com", chain_id=137)
+                _configure_clob_http_client()
+    return _RO_CLIENT
+
+
+def _configure_clob_http_client():
+    """Swap the v2 lib's module-level httpx client for one with explicit timeouts.
+
+    The lib ships a single shared `httpx.Client(http2=True)` (5s default timeout)
+    that every CLOB call multiplexes over one h2 connection. Under Cloudflare
+    rate-limiting that stream can stall while keepalive frames keep the read
+    alive — observed 2026-06-10 as scans wedged in poll() for 9+ minutes.
+    Explicit read timeout plus _reset_ro_client() bound that failure mode.
+    """
+    try:
+        import httpx
+        import py_clob_client_v2.http_helpers.helpers as _clob_helpers
+        _clob_helpers._http_client = httpx.Client(
+            http2=True,
+            timeout=httpx.Timeout(10.0, connect=5.0),
+        )
+    except Exception as e:
+        logger.warning(f"Could not configure CLOB http client timeouts: {e}")
+
+
+def _reset_ro_client():
+    """Drop the cached client; next _get_ro_client() rebuilds it AND replaces the
+    lib's pooled h2 connection (recovery from a wedged/stalled stream). The old
+    httpx client is not closed — an abandoned in-flight call may still hold it;
+    it gets garbage-collected when that call dies."""
+    global _RO_CLIENT
+    with _RO_CLIENT_LOCK:
+        _RO_CLIENT = None
+
+
+@dataclass
+class FrontWarning:
+    """Warning about approaching weather front or high uncertainty."""
+    city: str
+    date: str
+    warning_type: str  # "MODEL_SPREAD", "LOW_CONFIDENCE"
+    severity: str  # "LOW", "MEDIUM", "HIGH"
+    description: str
+    model_spread: Optional[float] = None
+
+
+@dataclass
+class EdgeHarvestOpportunity:
+    """A potential edge harvest trade."""
+    # Market info
+    city: str
+    target_date: str
+    bucket_low: Optional[float]  # None for "or below"
+    bucket_high: Optional[float]  # None for "or above"
+    bucket_str: str  # Display string like "≤35°F" or "≤10°C"
+
+    # Pricing
+    yes_price: float
+    no_price: float
+    potential_return_pct: float  # (1 - no_price) / no_price * 100
+
+    # Distance from forecast
+    forecast_temp: float
+    bands_away: int  # How many bucket-widths from forecast
+    degrees_away: float  # Actual distance in native unit
+
+    # Risk assessment
+    risk_tier: str  # "LOW", "MEDIUM", "HIGH"
+    risk_score: int  # 1-10 (10 = highest risk)
+    risk_factors: List[str]  # Explanations
+
+    # Model spread (uncertainty indicator, always in °F)
+    model_spread: float  # Max - Min of model forecasts
+    ecmwf_temp: Optional[float]
+    gfs_temp: Optional[float]
+    nws_temp: Optional[float]
+
+    # Front warning (structured object for rich filtering)
+    front_warning: Optional[FrontWarning]
+    front_warning_reason: Optional[str]
+
+    # Classification
+    threshold_type: str  # "AGGRESSIVE" (2 bands) or "CONSERVATIVE" (3 bands)
+
+    # Token IDs for trading
+    clob_token_ids: Tuple[Optional[str], Optional[str]]
+    market_url: str
+    liquidity: float
+    hours_remaining: float
+
+    # Order book data
+    best_ask_price: float = 0.0
+    best_ask_size: float = 0.0
+    best_bid_price: float = 0.0
+    best_bid_size: float = 0.0
+    spread: float = 0.0  # ask - bid
+
+    # PD-195: "NO" (buy NO far from forecast) or "YES" (buy YES inside forecast band)
+    recommended_side: str = "NO"
+
+    # PD-321 R3: "high" or "low" — which daily extreme this market resolves on
+    market_type: str = "high"
+
+    # Codex R3/R5 tradability — propagated from WeatherMarket; guards api.py /api/trade
+    # against orders to markets whose CLOB book is closed.
+    accepting_orders: bool = False
+
+    # PD-340 v3: settlement-location-basis correction + honest bands (display-only; operator owns sizing)
+    raw_bands: int = 0                              # bands on the raw (uncorrected) forecast
+    corrected_bands: Optional[int] = None           # bands on the basis-corrected forecast; None if uncorrected
+    effective_delta_c: float = 0.0                  # shrunk location offset applied (°C)
+    corrected_forecast_temp: Optional[float] = None # raw_forecast + effective_delta (market unit)
+    margin_c: Optional[float] = None                # signed °C: + = room outside bucket, − = forecast inside bucket
+    recommendation_status: str = "UNCORRECTED"      # ROOM / NO_ROOM / UNCORRECTED
+    basis_status: str = "uncorrected-no-data"       # corrected / uncorrected-no-data / uncorrected-coords-suspect
+    basis_confidence: str = "UNPROVEN"              # TRUSTED / PROVISIONAL / UNPROVEN
+    basis_n: int = 0
+    basis_version: Optional[int] = None
+    # PD-343: open-ended EXTREME bucket on the NO side (≥top for high, ≤bottom for low). That
+    # bucket aggregates the whole tail's probability mass; honest-bands can't bound it. Forced NO_ROOM.
+    open_bucket: bool = False
+    # PD-363: ROOM demoted because the FORECAST itself is unreliable (HIGH-severity front/spread
+    # warning, or the room margin doesn't beat the model spread). Honest-bands measures distance
+    # against settlement noise only; this catches forecast-error the location correction can't.
+    forecast_uncertain: bool = False
+
+    # Event/execution identity and transparent fee-aware economics.
+    market_id: str = ""
+    event_key: str = ""
+    gross_return_pct: float = 0.0
+    # Conditional payoff if the purchased share wins; not probabilistic EV.
+    net_win_return_pct: Optional[float] = None
+    estimated_fee_pct: Optional[float] = None
+    fee_enabled: Optional[bool] = None
+    fee_rate_bps: Optional[int] = None
+    fee_source: str = "UNKNOWN"
+    fee_known: bool = False
+    fee_model: str = "unknown-fee-metadata"
+
+    # Authoritative observation hard bound. UNKNOWN never changes eligibility.
+    nowcast_status: str = "UNKNOWN"
+    nowcast_station: Optional[str] = None
+    observed_extreme: Optional[float] = None
+    nowcast_hard_bound: bool = False
+
+    @property
+    def bucket(self) -> str:
+        """Alias for bucket_str (backwards compatibility with auto_harvest)."""
+        return self.bucket_str
+
+
+import os as _os
+import json as _json
+
+_BASIS_PATH = _os.path.join(_os.path.dirname(__file__), "backend", "city_basis.json")
+
+def _read_basis() -> dict:
+    """PD-340 v3: read the per-(city,market_type) location-basis profile fresh each scan.
+    Fail-honest: any error => empty profiles => every row is UNCORRECTED (raw bands shown)."""
+    try:
+        with open(_BASIS_PATH) as f:
+            d = _json.load(f)
+        if isinstance(d, dict) and isinstance(d.get("profiles"), dict):
+            return d
+    except Exception:
+        pass
+    return {"profiles": {}, "basis_version": None}
+
+
+class EdgeHarvestScanner:
+    """
+    Scans for edge harvest opportunities.
+
+    Strategy: Buy NO on buckets far from forecast to collect 0.5-2% returns.
+    """
+
+    # Thresholds
+    # Distance thresholds in BANDS (each band = 1 bucket width).
+    # Polymarket resolves the daily high to integer °F; an F-bucket
+    # labeled "86-87°F" covers integer outcomes {86, 87} = 2 outcomes wide.
+    # C-buckets are single-integer ("be 22°C") = 1 outcome wide.
+    # Original PD-321 R1 mistakenly set BUCKET_WIDTH_F = 1.0; reverted
+    # 2026-05-21 after operator caught the doubled band counts.
+    AGGRESSIVE_BANDS = 2  # 2 bucket-widths away (=4°F F-markets, =2°C C-markets)
+    CONSERVATIVE_BANDS = 3  # 3 bucket-widths away (=6°F F-markets, =3°C C-markets)
+
+    # Risk thresholds (in °F; converted for °C markets)
+    HIGH_MODEL_SPREAD = 6.0  # °F - indicates uncertainty
+    MEDIUM_MODEL_SPREAD = 4.0  # °F
+
+    # Minimum return to consider (PD-195: lowered from 0.5 to 0.1 to keep 99.1¢+ trades)
+    MIN_RETURN_PCT = 0.1
+
+    # Price-based safety thresholds: price above this = safe regardless of distance
+    SAFE_NO_PRICE = 0.90   # 90¢+ NO = genuinely conservative (≤10% YES probability)
+    SAFE_YES_PRICE = 0.90  # 90¢+ YES = near-certain hit (PD-195 YES-side mirror)
+
+    # Bucket widths by unit. Polymarket resolves daily extreme to integer degrees;
+    # bucket coverage in outcome space determines band size.
+    BUCKET_WIDTH_F = 2.0  # F-bucket "86-87°F" covers integers {86, 87} → 2 outcomes
+    BUCKET_WIDTH_C = 1.0  # C-bucket "22°C" covers integer {22} → 1 outcome
+
+    # PD-340 v3: a corrected forecast is "ROOM" only if it sits this many std-devs of the
+    # city's own settlement noise outside the bucket. Tuned via scripts/backtest_honest_bands.py
+    # (time-split, 2026-06-02): 1.25 is the knee — catches 71% of losses, keeps 44% of wins
+    # ROOM, +15.6pt separation; dominates 1.5. Raise toward 2.0 to be more loss-averse.
+    ROOM_STDEV_THRESHOLD = 1.25
+
+    def __init__(self):
+        pass
+    
+    def _bucket_width(self, unit: str = "F") -> float:
+        """Get bucket width for the given temperature unit."""
+        return self.BUCKET_WIDTH_C if unit == "C" else self.BUCKET_WIDTH_F
+
+    def calculate_bands_away(
+        self,
+        forecast: float,
+        bucket_low: Optional[float],
+        bucket_high: Optional[float],
+        unit: str = "F",
+    ) -> Tuple[int, float]:
+        """
+        Calculate how many bands and degrees away a bucket is from forecast.
+
+        Args:
+            unit: "F" or "C" - determines bucket width used for band calculation
+
+        Returns (bands_away, degrees_away)
+        """
+        bucket_width = self._bucket_width(unit)
+
+        # Handle "or below" buckets (bucket_low is None/-inf)
+        if bucket_low is None or bucket_low == float('-inf'):
+            if bucket_high is None:
+                return 0, 0
+            # Distance from forecast to bucket ceiling
+            if forecast <= bucket_high:
+                return 0, 0
+            degrees = forecast - bucket_high
+            bands = int(degrees / bucket_width)
+            return bands, degrees
+
+        # Handle "or above" buckets (bucket_high is None/inf)
+        if bucket_high is None or bucket_high == float('inf'):
+            if bucket_low is None:
+                return 0, 0
+            # Distance from forecast to bucket floor
+            if forecast >= bucket_low:
+                return 0, 0
+            degrees = bucket_low - forecast
+            bands = int(degrees / bucket_width)
+            return bands, degrees
+
+        # Normal bucket
+        if bucket_low <= forecast <= bucket_high:
+            return 0, 0
+
+        if forecast < bucket_low:
+            degrees = bucket_low - forecast
+        else:
+            degrees = forecast - bucket_high
+
+        bands = int(degrees / bucket_width)
+        return bands, degrees
+
+    def _signed_margin_c(self, forecast, bucket_low, bucket_high, unit):
+        """Signed gap between forecast and bucket, in °C. + = room (outside), − = inside bucket."""
+        div = 1.8 if unit == "F" else 1.0
+        lo = bucket_low if (bucket_low is not None and bucket_low != float('-inf')) else None
+        hi = bucket_high if (bucket_high is not None and bucket_high != float('inf')) else None
+        if lo is None and hi is None:
+            return None
+        if lo is None:                       # ≤hi bucket
+            return round((forecast - hi) / div, 2)
+        if hi is None:                       # ≥lo bucket
+            return round((lo - forecast) / div, 2)
+        if forecast < lo:
+            return round((lo - forecast) / div, 2)
+        if forecast > hi:
+            return round((forecast - hi) / div, 2)
+        return round(-min(forecast - lo, hi - forecast) / div, 2)  # inside: negative depth
+
+    def _apply_basis(self, city, mtype, unit, forecast_temp, bucket_low, bucket_high, raw_bands):
+        """PD-340 v3: apply the shrunk location-delta offset → honest bands + recommendation_status.
+        Returns a dict of the EdgeHarvestOpportunity basis fields (spread via **_basis)."""
+        basis = getattr(self, "_basis_cache", None) or {"profiles": {}, "basis_version": None}
+        out = dict(
+            raw_bands=raw_bands, corrected_bands=None, effective_delta_c=0.0,
+            corrected_forecast_temp=None, margin_c=None,
+            recommendation_status="UNCORRECTED", basis_status="uncorrected-no-data",
+            basis_confidence="UNPROVEN", basis_n=0, basis_version=basis.get("basis_version"),
+        )
+        prof = basis.get("profiles", {}).get(city, {}).get(mtype)
+        if prof and prof.get("n"):
+            out["basis_n"] = prof["n"]
+        if not prof or prof.get("n", 0) < 3 or prof.get("mean_delta_c") is None:
+            return out
+        n = prof["n"]; mean = prof["mean_delta_c"]; sd = prof.get("stdev_delta_c")
+        W = prof.get("bucket_width_c", 1.0)
+        # coords-suspect: large systematic mean AND high volatility — cannot point-correct reliably.
+        if abs(mean) > W and sd is not None and sd > 2 * W:
+            out["basis_status"] = "uncorrected-coords-suspect"
+            return out
+        # Apply the FULL measured location offset (best estimate of the systematic shift).
+        # Reliability is expressed via the stdev-aware room judgment + confidence label, NOT by
+        # damping the offset. Build smoke test 2026-06-02 showed n-shrinkage UNDER-corrected tight
+        # thin cities (guangzhou +2.05°/stdev0.34) → false ROOM on a losing bet. Revises spec R2-C.
+        eff_c = mean
+        out["effective_delta_c"] = round(eff_c, 2)
+        eff_market = eff_c * 1.8 if unit == "F" else eff_c
+        corrected = forecast_temp + eff_market
+        out["corrected_forecast_temp"] = round(corrected, 1)
+        cb, _cd = self.calculate_bands_away(corrected, bucket_low, bucket_high, unit=unit)
+        out["corrected_bands"] = cb
+        margin = self._signed_margin_c(corrected, bucket_low, bucket_high, unit)
+        out["margin_c"] = margin
+        out["basis_status"] = "corrected"
+        out["basis_confidence"] = "TRUSTED" if (n >= 10 and sd is not None and sd <= 1.0 * W) else "PROVISIONAL"
+        # Room is measured in units of the city's OWN volatility: the bucket is genuinely "far"
+        # only if the corrected forecast sits >= 1.5 std-devs outside it. margin <= 0 => forecast
+        # inside the bucket => no room. This is what separates a real edge from settlement noise.
+        vol = max(sd if sd is not None else 1.0, 0.3)
+        room_ratio = (margin / vol) if margin is not None else 0.0
+        out["recommendation_status"] = "ROOM" if (margin is not None and margin > 0 and room_ratio >= self.ROOM_STDEV_THRESHOLD) else "NO_ROOM"
+        return out
+
+    def _apply_yes_basis(self, city, mtype, unit, forecast_temp, bucket_low, bucket_high, raw_bands):
+        """Apply the same settlement-location correction to YES opportunities.
+
+        YES room means the corrected forecast remains *inside* the bucket by
+        enough of the city's observed settlement volatility. This mirrors the
+        NO calculation instead of silently omitting basis fields on YES rows.
+        """
+        out = self._apply_basis(city, mtype, unit, forecast_temp, bucket_low, bucket_high, raw_bands)
+        if out["basis_status"] != "corrected":
+            return out
+        corrected = out["corrected_forecast_temp"]
+        lo = None if bucket_low in (None, float("-inf")) else bucket_low
+        hi = None if bucket_high in (None, float("inf")) else bucket_high
+        distances = []
+        if lo is not None:
+            distances.append(corrected - lo)
+        if hi is not None:
+            distances.append(hi - corrected)
+        inside = all(d >= 0 for d in distances) if distances else False
+        div = 1.8 if unit == "F" else 1.0
+        margin_c = min(distances) / div if inside and distances else None
+        out["margin_c"] = round(margin_c, 2) if margin_c is not None else None
+        width = self._bucket_width(unit)
+        out["corrected_bands"] = int(min(distances) / width) if inside and distances else 0
+        prof = (getattr(self, "_basis_cache", {}) or {}).get("profiles", {}).get(city, {}).get(mtype, {})
+        vol = max(prof.get("stdev_delta_c") or 1.0, 0.3)
+        out["recommendation_status"] = (
+            "ROOM" if margin_c is not None and margin_c / vol >= self.ROOM_STDEV_THRESHOLD else "NO_ROOM"
+        )
+        return out
+
+    @staticmethod
+    def _nowcast_bound(nowcast, mtype, unit, bucket_low, bucket_high):
+        """Return (status, observed extreme, station, hard-elimination)."""
+        if not nowcast or not getattr(nowcast, "available", False):
+            return "UNKNOWN", None, getattr(nowcast, "station_id", None), False
+        observed_f = (
+            getattr(nowcast, "observed_low_f", None)
+            if mtype == "low" else getattr(nowcast, "observed_high_f", None)
+        )
+        if observed_f is None:
+            return "UNKNOWN", None, getattr(nowcast, "station_id", None), False
+        observed = (observed_f - 32) * 5 / 9 if unit == "C" else observed_f
+        lo = None if bucket_low in (None, float("-inf")) else bucket_low
+        hi = None if bucket_high in (None, float("inf")) else bucket_high
+        # The day's high can only rise; the day's low can only fall.
+        eliminated = ((mtype == "high" and hi is not None and observed > hi) or
+                      (mtype == "low" and lo is not None and observed < lo))
+        if eliminated:
+            return "BUCKET_ELIMINATED", observed, nowcast.station_id, True
+        return "BOUND_ACTIVE", observed, nowcast.station_id, False
+
+    def calculate_model_spread(
+        self,
+        ecmwf: Optional[float],
+        gfs: Optional[float],
+        nws: Optional[float]
+    ) -> float:
+        """Calculate spread between model forecasts."""
+        temps = [t for t in [ecmwf, gfs, nws] if t is not None]
+        if len(temps) < 2:
+            return 0.0
+        return max(temps) - min(temps)
+    
+    def detect_front_warnings(
+        self,
+        city: str,
+        target_date: str,
+        forecast,  # DailyForecast
+        market_type: str = "high",
+    ) -> List[FrontWarning]:
+        """
+        Detect conditions that increase forecast uncertainty.
+
+        Returns list of FrontWarning objects (empty if no warnings).
+        Absorbed from edge_harvest_scanner.py (PD-144 R2).
+        """
+        warnings = []
+
+        # Check model spread (ECMWF vs GFS) -- always in °F
+        suffix = "low" if market_type == "low" else "high"
+        ecmwf = getattr(forecast, f'ecmwf_{suffix}', None)
+        gfs = getattr(forecast, f'gfs_{suffix}', None)
+        if ecmwf is not None and gfs is not None:
+            spread = abs(ecmwf - gfs)
+            if spread >= 8:
+                warnings.append(FrontWarning(
+                    city=city, date=target_date,
+                    warning_type="MODEL_SPREAD", severity="HIGH",
+                    description=f"Models disagree by {spread:.0f}°F -- major front likely",
+                    model_spread=spread,
+                ))
+            elif spread >= 5:
+                warnings.append(FrontWarning(
+                    city=city, date=target_date,
+                    warning_type="MODEL_SPREAD", severity="MEDIUM",
+                    description=f"Models disagree by {spread:.0f}°F -- elevated uncertainty",
+                    model_spread=spread,
+                ))
+            elif spread >= 3:
+                warnings.append(FrontWarning(
+                    city=city, date=target_date,
+                    warning_type="MODEL_SPREAD", severity="LOW",
+                    description=f"Models disagree by {spread:.0f}°F -- minor uncertainty",
+                    model_spread=spread,
+                ))
+
+        # Check forecast confidence
+        confidence = getattr(forecast, 'confidence', None)
+        if confidence is not None:
+            if confidence < 0.5:
+                warnings.append(FrontWarning(
+                    city=city, date=target_date,
+                    warning_type="LOW_CONFIDENCE", severity="HIGH",
+                    description=f"Forecast confidence only {confidence*100:.0f}%",
+                ))
+            elif confidence < 0.7:
+                warnings.append(FrontWarning(
+                    city=city, date=target_date,
+                    warning_type="LOW_CONFIDENCE", severity="MEDIUM",
+                    description=f"Forecast confidence {confidence*100:.0f}%",
+                ))
+
+        return warnings
+    
+    def calculate_risk(
+        self,
+        bands_away: int,
+        degrees_away: float,
+        model_spread: float,
+        front_warnings: List[FrontWarning],
+        price: Optional[float] = None,
+        side: str = "NO",
+        no_price: Optional[float] = None,  # legacy alias, accepted for backwards compat
+    ) -> Tuple[str, int, List[str]]:
+        """
+        Calculate risk tier and score (PD-195: side-aware messaging, math unchanged).
+
+        For NO trades: bands_away = distance from forecast to bucket; price = no_price.
+        For YES trades: bands_away = margin from forecast to nearest bucket boundary; price = yes_price.
+        In both cases, larger bands_away = safer, higher price = safer.
+
+        Returns (tier, score, factors)
+        """
+        # Backwards compatibility: accept legacy `no_price` kwarg
+        if price is None:
+            price = no_price
+        if price is None:
+            raise TypeError("calculate_risk requires 'price' (or legacy 'no_price') kwarg")
+        score = 0
+        factors = []
+
+        # Distance factor (lower bands = higher risk; interpretation differs by side)
+        if side == "YES":
+            distance_label = "boundary"
+        else:
+            distance_label = "forecast"
+        # Reverted 2026-05-21 to original cutoffs alongside BUCKET_WIDTH_F=2.0.
+        # ≤2 bands = ≤4°F (F) / ≤2°C (C) close; ≤3 bands = ≤6°F / ≤3°C moderate.
+        if bands_away <= 2:
+            score += 4
+            factors.append(f"Close to {distance_label} ({bands_away} bands / {degrees_away:.1f} away)")
+        elif bands_away <= 3:
+            score += 2
+            factors.append(f"Moderate distance ({bands_away} bands / {degrees_away:.1f} away)")
+        else:
+            score += 1
+            factors.append(f"Far from {distance_label} ({bands_away} bands / {degrees_away:.1f} away)")
+
+        # Model spread factor
+        if model_spread >= self.HIGH_MODEL_SPREAD:
+            score += 4
+            factors.append(f"High model disagreement ({model_spread:.1f}°F spread)")
+        elif model_spread >= self.MEDIUM_MODEL_SPREAD:
+            score += 2
+            factors.append(f"Moderate model disagreement ({model_spread:.1f}°F spread)")
+
+        # Front warnings (structured severity from FrontWarning objects)
+        for warning in front_warnings:
+            if warning.severity == "HIGH":
+                score += 4
+                factors.append(f"⚠️ {warning.description}")
+            elif warning.severity == "MEDIUM":
+                score += 2
+                factors.append(f"⚡ {warning.description}")
+            elif warning.severity == "LOW":
+                score += 1
+
+        # Price factor — low price means market disagrees with our directional call
+        # This is the strongest signal: the market aggregates all information
+        other_side = "YES" if side == "NO" else "NO"
+        if price < 0.60:
+            score += 5
+            factors.append(f"Market pricing majority risk ({side} at ${price:.2f}, {other_side} >{(1-price)*100:.0f}%)")
+        elif price < 0.75:
+            score += 4
+            factors.append(f"Market pricing significant risk ({side} at ${price:.2f}, {other_side} >{(1-price)*100:.0f}%)")
+        elif price < 0.85:
+            score += 3
+            factors.append(f"Market pricing moderate risk ({side} at ${price:.2f})")
+        elif price < 0.95:
+            score += 1
+            factors.append(f"Market pricing low risk ({side} at ${price:.2f})")
+
+        # Determine tier
+        if score >= 7:
+            tier = "HIGH"
+        elif score >= 4:
+            tier = "MEDIUM"
+        else:
+            tier = "LOW"
+
+        return tier, min(score, 10), factors
+
+    # PD-350: one batched POST per 250 tokens instead of ~1000 sequential GETs.
+    # Sequential was ~0.4s/book ≈ 6.4 min/scan once ACTIVE_CITIES went 19→47 —
+    # past the UI's 6-min timeout — and the hammering tripped Cloudflare
+    # rate-limiting that wedged the shared h2 connection (scan hung in poll()).
+    _BOOK_BATCH_SIZE = 250
+    _BOOK_BATCH_DEADLINE_SEC = 30
+
+    @staticmethod
+    def _parse_book(book: dict) -> dict:
+        """Parse a raw CLOB book (single or batch element) to best bid/ask.
+
+        Sort: bids ascending (best=last), asks descending (best=last) — PD-221
+        empirical; batch elements verified identical 2026-06-10 (0/5 mismatch
+        vs single-fetch on live tokens).
+        """
+        bids = book.get("bids", [])
+        asks = book.get("asks", [])
+        best_ask = float(asks[-1]["price"]) if asks else 0.0
+        best_ask_size = float(asks[-1]["size"]) if asks else 0.0
+        best_bid = float(bids[-1]["price"]) if bids else 0.0
+        best_bid_size = float(bids[-1]["size"]) if bids else 0.0
+        return {
+            "best_ask_price": best_ask,
+            "best_ask_size": best_ask_size,
+            "best_bid_price": best_bid,
+            "best_bid_size": best_bid_size,
+            "spread": best_ask - best_bid if best_ask and best_bid else 0.0,
+        }
+
+    def _batch_fetch_order_books(self, token_ids: List[str]) -> dict:
+        """Fetch order books for many tokens via the CLOB batch endpoint.
+
+        Returns {token_id: parsed_book} in _fetch_order_book's shape. Tokens
+        absent from the response (or in chunks that failed twice) map to zeroed
+        books — identical semantics to the single-fetch failure path. Each
+        chunk runs under a hard wall-clock deadline; on timeout/error the
+        pooled h2 connection is rebuilt and the chunk retried once, so a
+        stalled stream costs ≤60s instead of hanging the whole scan.
+        """
+        out: dict = {}
+        if not token_ids:
+            return out
+        for start in range(0, len(token_ids), self._BOOK_BATCH_SIZE):
+            chunk = token_ids[start:start + self._BOOK_BATCH_SIZE]
+            payload = [{"token_id": t} for t in chunk]
+            books = None
+            for attempt in (1, 2):
+                # Daemon watchdog thread (not an executor): a wedged h2 read can
+                # outlive the deadline, and non-daemon executor workers pinned to
+                # it would block interpreter exit / uvicorn reload.
+                result_box = {}
+
+                def _call(payload=payload, box=result_box):
+                    try:
+                        box["books"] = _get_ro_client().get_order_books(payload)
+                    except Exception as exc:  # surfaced via box, re-raised below
+                        box["exc"] = exc
+
+                t = threading.Thread(target=_call, daemon=True)
+                t.start()
+                t.join(timeout=self._BOOK_BATCH_DEADLINE_SEC)
+                got = result_box.get("books")
+                # Error-shaped 200s arrive as dicts (Codex F6 class) — treat any
+                # non-list result, exception, or deadline overrun as a failed
+                # attempt so the reset/retry machinery actually engages.
+                if isinstance(got, list):
+                    books = got
+                    break
+                err = result_box.get("exc") or (
+                    f"non-list response: {type(got).__name__}" if got is not None
+                    else ("deadline exceeded" if t.is_alive() else "no result")
+                )
+                logger.warning(
+                    f"Batch order-book fetch failed (chunk {start // self._BOOK_BATCH_SIZE + 1}, "
+                    f"attempt {attempt}/2): {err} — resetting CLOB client"
+                )
+                _reset_ro_client()
+            if isinstance(books, list):
+                for b in books:
+                    try:
+                        tid = b.get("asset_id")
+                        if tid:
+                            out[tid] = self._parse_book(b)
+                    except (KeyError, ValueError, TypeError, AttributeError) as e:
+                        logger.warning(f"Unparseable batch book element: {e}")
+        missing = [t for t in token_ids if t not in out]
+        if missing:
+            logger.warning(
+                f"{len(missing)}/{len(token_ids)} order books missing after batch fetch; zero-filled"
+            )
+            for t in missing:
+                out[t] = {"best_ask_price": 0.0, "best_ask_size": 0.0,
+                          "best_bid_price": 0.0, "best_bid_size": 0.0, "spread": 0.0}
+        return out
+
+    def _fetch_order_book(self, token_id: str) -> dict:
+        """Fetch order book for a token. Returns best bid/ask info.
+
+        PD-221: V2 ClobClient.get_order_book returns dict (not object). Uses
+        module-cached read-only client to avoid per-call credential derive.
+        Sort: bids ascending (best=last), asks descending (best=last).
+        Verified empirically against LA + Dem Pres 2028 markets + V2 SDK
+        get_price helper cross-check.
+
+        PD-350: consults the per-scan batch prefetch cache first; the network
+        path below only runs for tokens the prefetch never saw.
+        """
+        cached = getattr(self, '_book_cache', {}).get(token_id)
+        if cached is not None:
+            return cached
+        try:
+            client = _get_ro_client()
+            book = client.get_order_book(token_id)
+
+            # Codex F6: error-shaped 200 dicts must surface, not silently zero out.
+            if isinstance(book, dict) and "error" in book:
+                logger.warning(f"Orderbook returned error for token_id={token_id}: {book['error']}")
+                return {"best_ask_price": 0.0, "best_ask_size": 0.0,
+                        "best_bid_price": 0.0, "best_bid_size": 0.0, "spread": 0.0}
+
+            return self._parse_book(book)
+        except Exception as e:
+            logger.warning(f"Failed to fetch order book for {token_id}: {e}")
+            return {"best_ask_price": 0.0, "best_ask_size": 0.0, "best_bid_price": 0.0, "best_bid_size": 0.0, "spread": 0.0}
+    
+    def find_opportunities(
+        self,
+        markets: List,  # WeatherMarket objects from scanner
+        forecasts: dict,  # {(city, date): DailyForecast}
+        nowcasts: Optional[dict] = None,  # {(city, date): StationNowcast}
+    ) -> List[EdgeHarvestOpportunity]:
+        """
+        Find edge harvest opportunities from market data.
+        
+        Returns list of opportunities sorted by potential return.
+        """
+        opportunities = []
+        nowcasts = nowcasts or {}
+        self._basis_cache = _read_basis()  # PD-340 v3: per-(city,market_type) location-basis profile (fail-honest, reloaded each scan)
+
+        # PD-350: batch-prefetch every candidate order book up front (one POST
+        # per 250 tokens, ~4-8 calls total). _fetch_order_book reads this cache.
+        _tok_seen = set()
+        _tok_ids = []
+        for m in markets:
+            for t in (getattr(m, 'clob_token_ids', None) or ()):
+                if t and t not in _tok_seen:
+                    _tok_seen.add(t)
+                    _tok_ids.append(t)
+        self._book_cache = self._batch_fetch_order_books(_tok_ids)
+
+        for market in markets:
+            # Get forecast for this market
+            key = (market.city_key, market.target_date)
+            forecast = forecasts.get(key)
+            if not forecast:
+                continue
+
+            # Shared computation (PD-195: hoisted so YES branch can reuse)
+            unit = getattr(market, 'bucket_unit', 'F')
+            # PD-321 R3: route highest-temp markets to forecast.high, lowest-temp to forecast.low.
+            mtype = getattr(market, 'market_type', 'high')
+            if mtype == 'low':
+                # PD-325 follow-up: refuse LOW opps when low_f is the synthetic
+                # `avg_high - 15` fallback. Synthetic lows are wildly off for many
+                # climates and produced confidently-wrong NO recommendations
+                # (pos_707 lost ~$4 on London May 26 17°C LOW with synthetic-low forecast).
+                if getattr(forecast, 'low_source', 'OPEN_METEO') == 'SYNTHETIC':
+                    continue
+                forecast_temp = forecast.low_c if unit == "C" else forecast.low_f
+            else:
+                forecast_temp = forecast.high_c if unit == "C" else forecast.high_f
+            if forecast_temp is None:
+                # Forecast lacks the requested extreme (e.g. some sources omit lows). Skip.
+                continue
+
+            bands_away, degrees_away = self.calculate_bands_away(
+                forecast_temp,
+                market.bucket_low,
+                market.bucket_high,
+                unit=unit,
+            )
+
+            # PD-340 v3: correct the forecast by the measured settlement-location delta and
+            # compute HONEST bands. Display-only: this never gates/sizes; the operator reads it.
+            _basis = self._apply_basis(
+                market.city_key, mtype, unit, forecast_temp,
+                market.bucket_low, market.bucket_high, bands_away,
+            )
+            # PD-343 open-bucket rule: selling NO on the open-ended EXTREME bucket (>=top for a
+            # high market, <=bottom for a low market) is a bet against the whole tail — that bucket
+            # is the catch-all for all extreme outcomes, not a single-degree slice, so honest-bands
+            # "room" (distance to the one closed edge) understates its probability and cannot bound
+            # the open side. Force NO_ROOM. Origin: tokyo >=28C -$542, buenos_aires >=27C -$225,
+            # seattle >=48F, nyc >=66F, atlanta >=78F (PD-340 loss analysis, ~$908 / 35% of losses).
+            _open_up = market.bucket_high is None or market.bucket_high == float('inf')
+            _open_down = market.bucket_low is None or market.bucket_low == float('-inf')
+            _basis['open_bucket'] = (mtype == 'high' and _open_up) or (mtype == 'low' and _open_down)
+            if _basis['open_bucket']:
+                _basis['recommendation_status'] = 'NO_ROOM'
+
+            no_price = market.no_price
+            if no_price is None or no_price <= 0:
+                no_price = 1.0 - (market.yes_price or 0)
+
+            model_suffix = 'low' if mtype == 'low' else 'high'
+            ecmwf = getattr(forecast, f'ecmwf_{model_suffix}', None)
+            gfs = getattr(forecast, f'gfs_{model_suffix}', None)
+            nws = getattr(forecast, f'nws_{model_suffix}', None)
+            model_spread = self.calculate_model_spread(ecmwf, gfs, nws)
+            front_warnings = self.detect_front_warnings(
+                market.city_key, market.target_date, forecast, market_type=mtype,
+            )
+            # PD-363: temper ROOM by FORECAST uncertainty. Honest-bands (PD-340) measures the
+            # corrected-forecast distance to the bucket against SETTLEMENT noise only — it is blind
+            # to whether the forecast itself is trustworthy. A HIGH-severity front/spread warning, or
+            # a room margin that doesn't beat the model spread, means the "room" sits inside the
+            # forecast's own error bar. Demote ROOM -> NO_ROOM. (Dallas 2026-07-13: +6.4°C room but
+            # ±8.5°F spread + front warning -> old risk score HIGH 9/10 while honest-bands said ROOM.
+            # Codex AMEND-8: the location correction is not a forecast-error correction; this adds it.)
+            _basis['forecast_uncertain'] = False
+            if _basis.get('recommendation_status') == 'ROOM':
+                _high_warn = any(getattr(w, 'severity', '') == 'HIGH' for w in front_warnings)
+                _spread_c = (model_spread or 0) / 1.8  # model_spread is °F
+                _margin = _basis.get('margin_c') or 0.0
+                if _high_warn or (_spread_c > 0 and _margin < 1.5 * _spread_c):
+                    _basis['recommendation_status'] = 'NO_ROOM'
+                    _basis['forecast_uncertain'] = True
+            nowcast_status, observed_extreme, nowcast_station, hard_bound = self._nowcast_bound(
+                nowcasts.get((market.city_key, market.target_date, mtype), nowcasts.get(key)),
+                mtype, unit, market.bucket_low, market.bucket_high
+            )
+            event_key = canonical_event_key(
+                market.city_key, market.target_date, mtype,
+                event_id=getattr(market, "event_id", None),
+            )
+
+            if market.bucket_low is None or market.bucket_low == float('-inf'):
+                bucket_str = f"≤{market.bucket_high}°{unit}"
+            elif market.bucket_high is None or market.bucket_high == float('inf'):
+                bucket_str = f"≥{market.bucket_low}°{unit}"
+            else:
+                bucket_str = f"{market.bucket_low}-{market.bucket_high}°{unit}"
+
+            # --- NO-side evaluation ---
+            no_passes = True
+            if bands_away < self.AGGRESSIVE_BANDS and no_price < self.SAFE_NO_PRICE:
+                no_passes = False
+            if no_price >= 1.0:
+                no_passes = False
+            potential_return = 0.0
+            if no_passes:
+                potential_return = (1.0 - no_price) / no_price * 100
+                if potential_return < self.MIN_RETURN_PCT:
+                    no_passes = False
+
+            if no_passes:
+                risk_tier, risk_score, risk_factors = self.calculate_risk(
+                    bands_away, degrees_away, model_spread, front_warnings,
+                    price=no_price, side="NO",
+                )
+                if no_price >= self.SAFE_NO_PRICE:
+                    threshold_type = "CONSERVATIVE"
+                elif bands_away >= self.CONSERVATIVE_BANDS and no_price >= 0.80:
+                    threshold_type = "CONSERVATIVE"
+                else:
+                    threshold_type = "AGGRESSIVE"
+
+                no_opp = EdgeHarvestOpportunity(
+                    city=market.city_key,
+                    target_date=market.target_date,
+                    bucket_low=market.bucket_low if market.bucket_low != float('-inf') else None,
+                    bucket_high=market.bucket_high if market.bucket_high != float('inf') else None,
+                    bucket_str=bucket_str,
+                    yes_price=market.yes_price,
+                    no_price=no_price,
+                    potential_return_pct=round(potential_return, 2),
+                    forecast_temp=round(forecast_temp, 1),
+                    bands_away=bands_away,
+                    degrees_away=round(degrees_away, 1),
+                    risk_tier=risk_tier,
+                    risk_score=risk_score,
+                    risk_factors=risk_factors,
+                    model_spread=round(model_spread, 1),
+                    ecmwf_temp=round(ecmwf, 1) if ecmwf else None,
+                    gfs_temp=round(gfs, 1) if gfs else None,
+                    nws_temp=round(nws, 1) if nws else None,
+                    front_warning=front_warnings[0] if front_warnings else None,
+                    front_warning_reason=front_warnings[0].description if front_warnings else None,
+                    threshold_type=threshold_type,
+                    clob_token_ids=market.clob_token_ids,
+                    market_url=getattr(market, 'market_url', ''),
+                    liquidity=getattr(market, 'liquidity', 0),
+                    hours_remaining=getattr(market, 'hours_remaining', 0),
+                    recommended_side="NO",
+                    market_type=mtype,
+                    accepting_orders=bool(getattr(market, 'accepting_orders', False)),
+                    market_id=str(getattr(market, 'market_id', '')),
+                    event_key=event_key,
+                    nowcast_status=nowcast_status,
+                    nowcast_station=nowcast_station,
+                    observed_extreme=round(observed_extreme, 1) if observed_extreme is not None else None,
+                    nowcast_hard_bound=hard_bound,
+                    **_basis,  # PD-340 v3: raw/corrected bands, margin, recommendation_status, basis_status, confidence
+                )
+                if hard_bound:
+                    no_opp.risk_factors.append(
+                        f"Positive hard bound: authoritative {nowcast_station} observation eliminated this bucket"
+                    )
+                    no_opp.risk_score = max(1, no_opp.risk_score - 2)
+                    no_opp.risk_tier = "LOW" if no_opp.risk_score <= 3 else (
+                        "MEDIUM" if no_opp.risk_score <= 6 else "HIGH"
+                    )
+                no_token_id = market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None
+                if no_token_id:
+                    ob_data = self._fetch_order_book(no_token_id)
+                    no_opp.best_ask_price = ob_data["best_ask_price"]
+                    no_opp.best_ask_size = ob_data["best_ask_size"]
+                    no_opp.best_bid_price = ob_data["best_bid_price"]
+                    no_opp.best_bid_size = ob_data["best_bid_size"]
+                    no_opp.spread = ob_data["spread"]
+                    if no_opp.best_ask_price > 0:
+                        no_opp.potential_return_pct = ((1.0 - no_opp.best_ask_price) / no_opp.best_ask_price) * 100
+                no_entry_price = no_opp.best_ask_price or no_opp.no_price
+                no_metrics = calculate_return_metrics(
+                    no_entry_price,
+                    fee_enabled=getattr(market, 'fee_enabled', None),
+                    fee_rate_bps=getattr(market, 'fee_rate_bps', None),
+                    liquidity_role="taker",
+                )
+                no_opp.gross_return_pct = round(no_metrics.gross_return_pct, 4)
+                no_opp.net_win_return_pct = (
+                    round(no_metrics.net_win_return_pct, 4)
+                    if no_metrics.net_win_return_pct is not None else None
+                )
+                no_opp.estimated_fee_pct = (
+                    round(no_metrics.estimated_fee_pct, 4)
+                    if no_metrics.estimated_fee_pct is not None else None
+                )
+                no_opp.fee_enabled = no_metrics.fee_enabled
+                no_opp.fee_rate_bps = no_metrics.fee_rate_bps
+                no_opp.fee_known = no_metrics.fee_known
+                no_opp.fee_model = no_metrics.fee_model
+                no_opp.fee_source = getattr(market, 'fee_source', 'UNKNOWN')
+                opportunities.append(no_opp)
+
+            # --- YES-side evaluation (PD-195): forecast inside band, high YES price ---
+            # Includes open-ended bands (≤X°F when forecast < X; ≥X°F when forecast > X)
+            b_low = market.bucket_low
+            b_high = market.bucket_high
+            forecast_in_band = False
+            if b_low is None or b_low == float('-inf'):
+                forecast_in_band = (b_high is not None and forecast_temp <= b_high)
+            elif b_high is None or b_high == float('inf'):
+                forecast_in_band = (b_low is not None and forecast_temp >= b_low)
+            else:
+                forecast_in_band = (b_low <= forecast_temp <= b_high)
+            if forecast_in_band:
+                yes_price = market.yes_price
+                if yes_price is None or yes_price <= 0:
+                    yes_price = 1.0 - (market.no_price or 0)
+                if self.SAFE_YES_PRICE <= yes_price < 1.0:
+                    yes_return = (1.0 - yes_price) / yes_price * 100
+                    if yes_return >= self.MIN_RETURN_PCT:
+                        # Margin = distance from forecast to nearest bucket boundary.
+                        # Open-ended bands: only the bounded side matters.
+                        margin_candidates = []
+                        if b_low is not None and b_low != float('-inf'):
+                            margin_candidates.append(forecast_temp - b_low)
+                        if b_high is not None and b_high != float('inf'):
+                            margin_candidates.append(b_high - forecast_temp)
+                        margin = min(margin_candidates) if margin_candidates else 0.0
+                        margin_bands = int(margin / self._bucket_width(unit))
+                        y_tier, y_score, y_factors = self.calculate_risk(
+                            margin_bands, margin, model_spread, front_warnings,
+                            price=yes_price, side="YES",
+                        )
+                        y_thresh = "CONSERVATIVE" if yes_price >= self.SAFE_YES_PRICE else "AGGRESSIVE"
+                        _yes_basis = self._apply_yes_basis(
+                            market.city_key, mtype, unit, forecast_temp,
+                            market.bucket_low, market.bucket_high, margin_bands,
+                        )
+                        if hard_bound:
+                            # Observed daily extrema are monotonic. Once outside
+                            # this bucket, a YES outcome is impossible.
+                            continue
+                        yes_opp = EdgeHarvestOpportunity(
+                            city=market.city_key,
+                            target_date=market.target_date,
+                            bucket_low=market.bucket_low if market.bucket_low != float('-inf') else None,
+                            bucket_high=market.bucket_high if market.bucket_high != float('inf') else None,
+                            bucket_str=bucket_str,
+                            yes_price=yes_price,
+                            no_price=market.no_price if market.no_price is not None else (1.0 - yes_price),
+                            potential_return_pct=round(yes_return, 2),
+                            forecast_temp=round(forecast_temp, 1),
+                            bands_away=margin_bands,
+                            degrees_away=round(margin, 1),
+                            risk_tier=y_tier,
+                            risk_score=y_score,
+                            risk_factors=y_factors,
+                            model_spread=round(model_spread, 1),
+                            ecmwf_temp=round(ecmwf, 1) if ecmwf else None,
+                            gfs_temp=round(gfs, 1) if gfs else None,
+                            nws_temp=round(nws, 1) if nws else None,
+                            front_warning=front_warnings[0] if front_warnings else None,
+                            front_warning_reason=front_warnings[0].description if front_warnings else None,
+                            threshold_type=y_thresh,
+                            clob_token_ids=market.clob_token_ids,
+                            market_url=getattr(market, 'market_url', ''),
+                            liquidity=getattr(market, 'liquidity', 0),
+                            hours_remaining=getattr(market, 'hours_remaining', 0),
+                            recommended_side="YES",
+                            market_type=mtype,
+                            accepting_orders=bool(getattr(market, 'accepting_orders', False)),
+                            market_id=str(getattr(market, 'market_id', '')),
+                            event_key=event_key,
+                            nowcast_status=nowcast_status,
+                            nowcast_station=nowcast_station,
+                            observed_extreme=round(observed_extreme, 1) if observed_extreme is not None else None,
+                            nowcast_hard_bound=False,
+                            **_yes_basis,
+                        )
+                        yes_token_id = market.clob_token_ids[0] if len(market.clob_token_ids) > 0 else None
+                        if yes_token_id:
+                            ob_data = self._fetch_order_book(yes_token_id)
+                            yes_opp.best_ask_price = ob_data["best_ask_price"]
+                            yes_opp.best_ask_size = ob_data["best_ask_size"]
+                            yes_opp.best_bid_price = ob_data["best_bid_price"]
+                            yes_opp.best_bid_size = ob_data["best_bid_size"]
+                            yes_opp.spread = ob_data["spread"]
+                            if yes_opp.best_ask_price > 0:
+                                yes_opp.potential_return_pct = ((1.0 - yes_opp.best_ask_price) / yes_opp.best_ask_price) * 100
+                        yes_entry_price = yes_opp.best_ask_price or yes_opp.yes_price
+                        yes_metrics = calculate_return_metrics(
+                            yes_entry_price,
+                            fee_enabled=getattr(market, 'fee_enabled', None),
+                            fee_rate_bps=getattr(market, 'fee_rate_bps', None),
+                            liquidity_role="taker",
+                        )
+                        yes_opp.gross_return_pct = round(yes_metrics.gross_return_pct, 4)
+                        yes_opp.net_win_return_pct = (
+                            round(yes_metrics.net_win_return_pct, 4)
+                            if yes_metrics.net_win_return_pct is not None else None
+                        )
+                        yes_opp.estimated_fee_pct = (
+                            round(yes_metrics.estimated_fee_pct, 4)
+                            if yes_metrics.estimated_fee_pct is not None else None
+                        )
+                        yes_opp.fee_enabled = yes_metrics.fee_enabled
+                        yes_opp.fee_rate_bps = yes_metrics.fee_rate_bps
+                        yes_opp.fee_known = yes_metrics.fee_known
+                        yes_opp.fee_model = yes_metrics.fee_model
+                        yes_opp.fee_source = getattr(market, 'fee_source', 'UNKNOWN')
+                        opportunities.append(yes_opp)
+        
+        # Sort by potential return (highest first)
+        opportunities.sort(
+            key=lambda x: x.net_win_return_pct
+            if x.net_win_return_pct is not None else float('-inf'),
+            reverse=True,
+        )
+        
+        return opportunities
+
+
+def get_edge_harvest_scanner() -> EdgeHarvestScanner:
+    """Get singleton scanner instance."""
+    return EdgeHarvestScanner()

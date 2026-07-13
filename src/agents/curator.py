@@ -24,7 +24,14 @@ from src.content.schemas import (
     ActionItem,
     ActionType,
     generate_content_id,
+    DeepAnalysisResult,
+    RouteDestination,
+    SystemAction,
+    DatamartAssignment,
+    generate_analysis_id,
 )
+from src.control_plane.routing_policy import RoutingPolicy
+from src.content.datamart_bundler import DatamartBundler
 
 
 # Load taxonomy at module level
@@ -72,6 +79,11 @@ class CuratorAgent(BaseAgent):
         self.fetcher = ContentFetcher()
         self.store = content_store or ContentStore()
         self.taxonomy = load_taxonomy()
+        
+        # Initialize Policy and Bundler
+        self.routing_policy = RoutingPolicy()
+        self.bundler = DatamartBundler()
+        
         self.dry_run = dry_run
     
     def process(self, input_data: dict) -> ProposalEnvelope:
@@ -127,6 +139,94 @@ class CuratorAgent(BaseAgent):
             raw_content=fetch_result.content[:10000] if fetch_result.content else None,
         )
         
+        # DEEP ANALYSIS & ROUTING
+        capability_claims.extend(["deep_analysis", "routing_evaluation"])
+        
+        # 1. Prepare context for policy evaluation
+        policy_context = {
+            "content_id": entry.id,
+            "url": url,
+            "title": entry.title,
+            "summary": entry.summary,
+            "categories": entry.categories,
+            "relevance_score": entry.relevance_score,
+            "raw_content_length": len(entry.raw_content or ""),
+            "action_count": len(entry.action_items)
+        }
+        
+        # Prepare scores
+        conf_score = analysis.get("confidence_score", 0.5) if isinstance(analysis, dict) else 0.5
+        nov_score = analysis.get("novelty_score", 0) if isinstance(analysis, dict) else 0
+
+        # 2. Evaluate Policy
+        decision = self.routing_policy.evaluate(
+            content_id=entry.id,
+            relevance_score=entry.relevance_score,
+            categories=entry.categories,
+            action_items=[ai.to_dict() for ai in entry.action_items],
+            confidence_score=conf_score,
+            novelty_score=nov_score,
+            content_length=len(entry.raw_content or ""),
+            manual_tags=manual_tags
+        )
+        
+        # 3. Construct DeepAnalysisResult
+        analysis_result = DeepAnalysisResult(
+            analysis_id=generate_analysis_id(),
+            content_id=entry.id,
+            url=url,
+            analysis_ts=datetime.now(timezone.utc).isoformat(),
+            confidence_score=decision.confidence_score,
+            route_destination=decision.route_destination,
+            system_actions=decision.system_actions,
+            grounded_claims=[], # TODO: Extract claims from LLM analysis if available
+            evidence_refs=[], 
+            uncertainty_flags=decision.uncertainty_flags,
+            novelty_score=nov_score,
+            policy_name="standard_routing",
+            run_id=self.run_id
+        )
+        
+        # 4. Handle Datamart Assignment
+        if decision.topic_id:
+            analysis_result.datamart_assignment = DatamartAssignment(
+                topic_id=decision.topic_id,
+                relevance_to_topic=decision.confidence_score, # Use confidence as proxy
+                suggested_tags=[]
+            )
+            
+        # Attach to entry
+        entry.deep_analysis = analysis_result
+        
+        # 5. EXECUTE ROUTING ACTIONS
+        
+        # Action: BUNDLE (Datamart)
+        if SystemAction.BUNDLE in decision.system_actions and analysis_result.datamart_assignment:
+            if not self.dry_run:
+                capability_claims.append("write_datamart_bundle")
+                # Auto-create topic if needed (policy handled decision, we execute)
+                target_topic_id = analysis_result.datamart_assignment.topic_id
+                
+                # Check if we need to notify about auto-creation (via return value or side effect)
+                # The bundler.add_source handles folder creation implicitly?
+                # DatamartBundler.add_source logic checks for topic dir.
+                
+                try:
+                    self.bundler.add_source(
+                        topic_id=target_topic_id,
+                        content_id=entry.id,
+                        url=entry.url,
+                        title=entry.title,
+                        relevance_score=entry.relevance_score,
+                        summary=entry.summary,
+                        categories=entry.categories,
+                        raw_content=entry.raw_content,
+                    )
+                except Exception as e:
+                    # Fail-closed: Log error, fallback decision is implicit (store still happens)
+                    # We might want to update the analysis result to reflect failure?
+                    print(f"Datamart write failed: {e}")
+        
         # Store unless dry run
         if not self.dry_run:
             capability_claims.append("write_content_store")
@@ -147,6 +247,11 @@ class CuratorAgent(BaseAgent):
             {
                 "status": "ingested",
                 "content_entry": entry.to_dict(),
+                "routing": {
+                    "destination": decision.route_destination.value,
+                    "actions": [a.value for a in decision.system_actions],
+                    "bundle_topic": decision.topic_id
+                }
             },
             capability_claims=capability_claims,
         )
@@ -191,6 +296,8 @@ Respond with ONLY valid JSON (no markdown), in this exact format:
   "summary": "1-3 sentence summary of the key points",
   "categories": ["cat1", "cat2"],
   "relevance_score": 0.75,
+  "confidence_score": 0.9,
+  "novelty_score": 3,
   "action_items": [
     {{
       "type": "enhancement|correction|research|documentation|idea",
@@ -205,6 +312,8 @@ RULES:
 - Categories MUST be from: {json.dumps(category_ids)}
 - Pick 1-3 most relevant categories
 - relevance_score: 0.0-1.0 (how applicable to an AI agent codebase)
+- confidence_score: 0.0-1.0 (how confident are you in this analysis/categorization, high quality sources = high confidence)
+- novelty_score: 1-5 (1=generic/known, 5=groundbreaking/new idea)
 - action_items: 0-3 items, only if genuinely applicable
 - related_files: use real file paths if you can infer them, otherwise omit
 - priority: 1=high, 5=low
@@ -245,6 +354,8 @@ RULES:
             "summary": result.get("summary", "No summary available"),
             "categories": categories,
             "relevance_score": min(1.0, max(0.0, result.get("relevance_score", 0.5))),
+            "confidence_score": min(1.0, max(0.0, result.get("confidence_score", 0.5))),
+            "novelty_score": min(5, max(1, result.get("novelty_score", 1))),
             "action_items": action_items,
         }
     
@@ -276,11 +387,20 @@ RULES:
             if len(first_para) < 300:
                 summary = first_para
         
+        # LOG WARNING prominently - this should be visible to user
+        import logging
+        logger = logging.getLogger("dtl-curator")
+        logger.warning(f"⚠️ LLM UNAVAILABLE - using fallback analysis: {error}")
+        logger.warning("Run 'dtl health' to diagnose. Check GOOGLE_API_KEY in .env")
+        print(f"⚠️ WARNING: LLM unavailable ({error}) - using basic analysis")
+        
         return {
-            "summary": f"{summary} [Fallback analysis: {error}]",
+            "summary": summary,  # Clean summary without error embedded
             "categories": categories or ["uncategorized"],
             "relevance_score": 0.5,
             "action_items": [],
+            "_fallback_used": True,  # Flag for detection
+            "_fallback_reason": error,
         }
     
     def process_queue(self, queue_path: Path) -> list[dict]:

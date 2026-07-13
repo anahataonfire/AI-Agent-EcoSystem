@@ -1,9 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  turbopack: {
+  /* turbopack: {
     root: process.cwd(),
-  },
+  }, */
 };
 
 export default nextConfig;
