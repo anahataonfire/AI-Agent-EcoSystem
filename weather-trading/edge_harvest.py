@@ -161,6 +161,10 @@ class EdgeHarvestOpportunity:
     # PD-343: open-ended EXTREME bucket on the NO side (≥top for high, ≤bottom for low). That
     # bucket aggregates the whole tail's probability mass; honest-bands can't bound it. Forced NO_ROOM.
     open_bucket: bool = False
+    # PD-363: ROOM demoted because the FORECAST itself is unreliable (HIGH-severity front/spread
+    # warning, or the room margin doesn't beat the model spread). Honest-bands measures distance
+    # against settlement noise only; this catches forecast-error the location correction can't.
+    forecast_uncertain: bool = False
 
     # Event/execution identity and transparent fee-aware economics.
     market_id: str = ""
@@ -790,6 +794,21 @@ class EdgeHarvestScanner:
             front_warnings = self.detect_front_warnings(
                 market.city_key, market.target_date, forecast, market_type=mtype,
             )
+            # PD-363: temper ROOM by FORECAST uncertainty. Honest-bands (PD-340) measures the
+            # corrected-forecast distance to the bucket against SETTLEMENT noise only — it is blind
+            # to whether the forecast itself is trustworthy. A HIGH-severity front/spread warning, or
+            # a room margin that doesn't beat the model spread, means the "room" sits inside the
+            # forecast's own error bar. Demote ROOM -> NO_ROOM. (Dallas 2026-07-13: +6.4°C room but
+            # ±8.5°F spread + front warning -> old risk score HIGH 9/10 while honest-bands said ROOM.
+            # Codex AMEND-8: the location correction is not a forecast-error correction; this adds it.)
+            _basis['forecast_uncertain'] = False
+            if _basis.get('recommendation_status') == 'ROOM':
+                _high_warn = any(getattr(w, 'severity', '') == 'HIGH' for w in front_warnings)
+                _spread_c = (model_spread or 0) / 1.8  # model_spread is °F
+                _margin = _basis.get('margin_c') or 0.0
+                if _high_warn or (_spread_c > 0 and _margin < 1.5 * _spread_c):
+                    _basis['recommendation_status'] = 'NO_ROOM'
+                    _basis['forecast_uncertain'] = True
             nowcast_status, observed_extreme, nowcast_station, hard_bound = self._nowcast_bound(
                 nowcasts.get((market.city_key, market.target_date, mtype), nowcasts.get(key)),
                 mtype, unit, market.bucket_low, market.bucket_high

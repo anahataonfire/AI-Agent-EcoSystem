@@ -50,6 +50,7 @@ export interface EdgeHarvestOpportunity {
     basisN?: number;
     basisVersion?: number | null;
     openBucket?: boolean;
+    forecastUncertain?: boolean;
     yesPrice: number;
     noPrice: number;
     potentialReturnPct: number;

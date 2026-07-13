@@ -188,6 +188,8 @@ const EdgeHarvestRow = ({ opp, onTrade, trading, isLive }: { opp: EdgeHarvestRow
     ? `${opp.nowcastStation ?? 'authoritative station'} observed ${opp.observedExtreme?.toFixed(1) ?? '—'}° and eliminated this bucket`
     : opp.openBucket
     ? 'open-ended bucket — bet against the whole tail'
+    : opp.forecastUncertain
+    ? `forecast shaky — ±${(opp.modelSpread ?? 0).toFixed(0)}° spread${opp.frontWarning ? ' + front' : ''}`
     : recStatus === 'UNCORRECTED'
     ? (opp.basisStatus === 'uncorrected-coords-suspect'
         ? `erratic settlement · n=${opp.basisN ?? 0}`
